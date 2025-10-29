@@ -73,13 +73,54 @@ class PylintCommand(distutils.cmd.Command):
             pass
 
 
+class TestCommand(distutils.cmd.Command):
+    """A custom command to run tests using pytest."""
+
+    description = 'run tests with pytest'
+    user_options = [
+        ('pytest-args=', 'a', 'Arguments to pass to pytest'),
+    ]
+
+    def initialize_options(self):
+        """Set default values for options."""
+        self.pytest_args = ''
+
+    def finalize_options(self):
+        """Post-process options."""
+        pass
+
+    def run(self):
+        """Run command."""
+        import sys
+
+        # Check if pytest is available
+        try:
+            import pytest
+        except ImportError:
+            print("Error: pytest is not installed.")
+            print("Install test dependencies with:")
+            print("  pip install pytest mock")
+            sys.exit(1)
+
+        # Run pytest
+        command = [sys.executable, '-m', 'pytest']
+        if self.pytest_args:
+            command.extend(self.pytest_args.split())
+        else:
+            command.append('tests/')
+
+        self.announce(
+            'Running command: %s' % ' '.join(command),
+            level=distutils.log.INFO)
+        errno = subprocess.call(command)
+        sys.exit(errno)
+
+
 setup(
     name='hephaestus',
     version='0.0.1',
     description='Check Type Systems',
     python_requires='>=3.4, <4',
-    setup_requires=['pytest-runner', 'pytest-pylint', 'pytest-flake8'],
-    tests_require=['pytest', 'mock', 'pylint', 'flake8'],
     packages=find_packages(include=['src*']),
     package_data={'src': ['resources/*']},
     include_package_data=True,
@@ -87,5 +128,6 @@ setup(
     cmdclass={
         'clean': CleanCommand,
         'lint': PylintCommand,
+        'test': TestCommand,
     },
 )
