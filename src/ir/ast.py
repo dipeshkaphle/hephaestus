@@ -538,7 +538,8 @@ class ClassDeclaration(Declaration):
                  fields: List[FieldDeclaration] = [],
                  functions: List[FunctionDeclaration] = [],
                  is_final=True,
-                 type_parameters: List[types.TypeParameter] = []):
+                 type_parameters: List[types.TypeParameter] = [],
+                 structural: bool = False):
         self.name = name
         self.superclasses = superclasses
         self.class_type = class_type or self.REGULAR
@@ -546,6 +547,7 @@ class ClassDeclaration(Declaration):
         self.functions = functions
         self.is_final = is_final
         self.type_parameters = type_parameters
+        self.structural = structural
         self.supertypes = [s.class_type for s in self.superclasses]
 
     @property
@@ -584,11 +586,42 @@ class ClassDeclaration(Declaration):
 
     def get_type(self):
         if self.type_parameters:
-            return types.TypeConstructor(
-                self.name, self.type_parameters,
-                self.supertypes)
-        return types.SimpleClassifier(
-            self.name, self.supertypes)
+            if self.structural:
+                # Structural typing: create StructuralClassifier with field/method signatures
+                classifier = types.StructuralClassifier(
+                    self.name,
+                    supertypes=self.supertypes,
+                    field_signatures=self.get_field_signatures(),
+                    method_signatures=self.get_method_signatures()
+                )
+                return types.TypeConstructor(
+                    self.name,
+                    self.type_parameters,
+                    classifier=classifier
+                )
+            else:
+                # Nominal typing (default, backward compatible)
+                return types.TypeConstructor(
+                    self.name,
+                    self.type_parameters,
+                    self.supertypes
+                )
+
+        # Non-generic classes
+        if self.structural:
+            # Structural typing
+            return types.StructuralClassifier(
+                self.name,
+                supertypes=self.supertypes,
+                field_signatures=self.get_field_signatures(),
+                method_signatures=self.get_method_signatures()
+            )
+        else:
+            # Nominal typing (default, backward compatible)
+            return types.SimpleClassifier(
+                self.name,
+                self.supertypes
+            )
 
     def get_class_prefix(self):
         if self.class_type == self.REGULAR:
@@ -716,6 +749,32 @@ class ClassDeclaration(Declaration):
         attributes = self.get_callable_functions(class_decls)
         attributes.update(self.get_all_fields(class_decls))
         return attributes
+
+    def get_field_signatures(self):
+        """
+        Get field signatures for structural type checking.
+
+        Returns a list of FieldInfo objects representing
+        the structural signature of this class's fields.
+        """
+        from src.ir.types import FieldInfo
+        return [FieldInfo(f.name, f.field_type) for f in self.fields]
+
+    def get_method_signatures(self):
+        """
+        Get method signatures for structural type checking.
+
+        Returns a list of MethodInfo objects representing
+        the structural signature of this class's methods.
+        """
+        from src.ir.types import MethodInfo
+        signatures = []
+        for func in self.functions:
+            method_name = func.name
+            param_types = [p.param_type for p in func.params]
+            return_type = func.ret_type
+            signatures.append(MethodInfo(method_name, param_types, return_type))
+        return signatures
 
     def get_abstract_functions(self, class_decls) -> List[FunctionDeclaration]:
         # Get the abstract functions that are declared in the current class.
