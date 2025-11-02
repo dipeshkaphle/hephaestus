@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hephaestus"
+version = "0.0.1"
+description = "Check Type Systems"
+requires-python = ">=3.9"
+dependencies = [
+    "tqdm",
+]
+
+# Using scripts (old-style) to keep hephaestus.py as-is per user preference
+[project.scripts]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "mock",
+    "pytest-pylint",
+    "pytest-flake8",
+]
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.setuptools.package-data]
+src = ["resources/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-vv"
+
+[tool.flake8]
+exclude = ["pickle_it.py", "setup.py", "src/examples/*", "examples/*", "tests/*"]
