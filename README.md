@@ -54,14 +54,73 @@ indicates a potential soundness bug in the compiler under test.
 
 # Requirements
 
-* Python: 3.8+
+* Python: 3.9+
+* uv (recommended) or pip
 
 # Getting Started
 
+## Installation
+
+### Using uv (recommended)
+
+[uv](https://github.com/astral-sh/uv) is a fast Python package manager. To install dependencies with uv:
+
+```bash
+# Install uv if not already installed
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install project dependencies
+uv sync
+
+# Or install with dev dependencies
+uv sync --all-extras
+```
+
+### Using pip (traditional)
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+pip install -r test-requirements.txt
+
+# Or install in editable mode
+pip install -e .
+```
+
+## Available Commands
+
+If you're using uv, you can use the provided Makefile for common tasks:
+
+```bash
+make help      # Show available commands
+make install   # Install dependencies
+make sync      # Sync dependencies with lockfile
+make clean     # Remove build artifacts
+make lint      # Run linting
+make test      # Run tests
+```
+
+Alternatively, you can run commands directly:
+
+```bash
+uv run python hephaestus.py --help  # Run hephaestus
+uv run pytest tests/                # Run tests
+uv run pytest --pylint --flake8 src/ # Run linting
+```
+
 ## Usage
 
+**Using uv:**
+```bash
+uv run python hephaestus.py --help
 ```
+
+**Direct execution:**
+```bash
 ./hephaestus.py --help
+```
+
+Output:
 usage: hephaestus.py [-h] [-s SECONDS] [-i ITERATIONS] [-t TRANSFORMATIONS] [--batch BATCH] [-b BUGS] [-n NAME] [-T [{TypeErasure} [{TypeErasure} ...]]]
                      [--transformation-schedule TRANSFORMATION_SCHEDULE] [-R REPLAY] [-e] [-k] [-S] [-w WORKERS] [-d] [-r] [-F LOG_FILE] [-L] [-N] [--language {kotlin,groovy,java}]
                      [--max-type-params MAX_TYPE_PARAMS] [--max-depth MAX_DEPTH] [-P] [--timeout TIMEOUT] [--cast-numbers] [--disable-use-site-variance] [--disable-contravariance-use-site]
@@ -119,20 +178,30 @@ optional arguments:
 
 ## Run Tests
 
-To run `hephaestus` tests you should execute the following commands:
+To run `hephaestus` tests, use one of the following commands:
 
+**Using uv (recommended):**
+```bash
+make test
+# or
+uv run pytest tests/
 ```
+
+**Using traditional setup:**
+```bash
 python setup.py test
+# or
+pytest tests/
 ```
 
-The output of the previous command should be similar to the following:
+The output should be similar to the following:
 
 ```
 tests/test_call_analysis.py::test_program1 PASSED                       [  0%]
 ...
-tests/test_use_analysis.py::test_program7 PASSED                        [100%]
+tests/test_use_analysis.py::test_program7 PASSED                        [  99%]
 tests/test_use_analysis.py::test_program8 PASSED                        [100%]
-============================ 154 passed in 0.55s =============================
+============================= 235 passed in 0.80s =============================
 ```
 
 ## Example: Testing the Java compiler
@@ -142,7 +211,15 @@ generator. Specifically, we will produce 30 test programs in batches of 10
 test programs using two workers with the following command.
 The name of testing session is "mysession".
 
+**Using uv:**
+```bash
+uv run python hephaestus.py --language java --transformations 0 \
+    --batch 10 --iterations 30 --workers 2 -P \
+    --name mysession
 ```
+
+**Direct execution:**
+```bash
 ./hephaestus.py --language java --transformations 0 \
     --batch 10 --iterations 30 --workers 2 -P \
     --name mysession
