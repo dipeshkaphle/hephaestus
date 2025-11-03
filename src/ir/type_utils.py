@@ -255,7 +255,12 @@ def _find_types(etype, types, get_subtypes, include_self, bound=None,
 
 def find_subtypes(etype, types, include_self=False, bound=None,
                   concrete_only=False,
-                  ignore_variance=False):
+                  ignore_variance=False,
+                  blacklist=None):
+    if blacklist and hasattr(etype, 'name') and etype.name in blacklist:
+        return []
+    if blacklist:
+        types = [t for t in types if not (hasattr(t, 'name') and t.name in blacklist)]
     return _find_types(etype, types, get_subtypes=True,
                        include_self=include_self, concrete_only=concrete_only,
                        ignore_variance=ignore_variance)

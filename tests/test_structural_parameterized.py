@@ -100,14 +100,19 @@ def test_check_if_parameterized_type_has_field_signatures():
     # Check if it has structural typing attributes
     has_field_sigs = hasattr(box_of_numbers, 'field_signatures')
     has_method_sigs = hasattr(box_of_numbers, 'method_signatures')
+    has_structural = hasattr(box_of_numbers, 'structural')
 
     print(f"ParameterizedType has field_signatures: {has_field_sigs}")
     print(f"ParameterizedType has method_signatures: {has_method_sigs}")
 
-    # ParameterizedType inherits from SimpleClassifier, not StructuralClassifier
-    # So it likely doesn't have these attributes
-    assert not has_field_sigs
-    assert not has_method_sigs
+    # ParameterizedType inherits from SimpleClassifier, which now includes these attributes
+    # They should exist but be empty since this is a nominal (non-structural) type
+    assert has_field_sigs
+    assert has_method_sigs
+    assert has_structural
+    assert box_of_numbers.structural == False
+    assert box_of_numbers.field_signatures == []
+    assert box_of_numbers.method_signatures == []
 
 
 def test_attempt_structural_parameterized_hybrid():

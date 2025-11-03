@@ -406,6 +406,7 @@ class Generator():
 
         self.gen_class_functions(cls, super_cls_info,
                                  not_void, fret_type, signature)
+        cls.is_complete = True
         self._blacklisted_classes.remove(class_name)
         self.namespace = initial_namespace
         self.depth = initial_depth
@@ -869,12 +870,15 @@ class Generator():
         )
         expr_type = expr_type or self.select_type()
         if find_subtype:
+            types_for_subtyping = self.get_types()
             subtypes = tu.find_subtypes(expr_type, self.get_types(),
-                                        include_self=True, concrete_only=True)
-            old_type = expr_type
-            expr_type = ut.random.choice(subtypes)
-            msg = "Found subtype of {}: {}".format(old_type, expr_type)
-            log(self.logger, msg)
+                                        include_self=True, concrete_only=True,
+                                        blacklist=self._blacklisted_classes)
+            if subtypes:
+                old_type = expr_type
+                expr_type = ut.random.choice(subtypes)
+                msg = "Found subtype of {}: {}".format(old_type, expr_type)
+                log(self.logger, msg)
         generators = self.get_generators(expr_type, only_leaves, subtype,
                                          exclude_var, sam_coercion=sam_coercion)
         expr = ut.random.choice(generators)(expr_type)
@@ -1243,16 +1247,20 @@ class Generator():
 
         if subtype:
             subtypes = tu.find_subtypes(etype, self.get_types(),
-                                        include_self=True, concrete_only=True)
-            true_type = ut.random.choice(subtypes)
-            false_type = ut.random.choice(subtypes)
-            tmp_t = ut.random.choice(subtypes)
-            # Find which of the given types is the supertype.
-            cond_type = functools.reduce(
-                lambda acc, x: acc if x.is_subtype(acc) else x,
-                [true_type, false_type],
-                tmp_t
-            )
+                                        include_self=True, concrete_only=True,
+                                        blacklist=self._blacklisted_classes)
+            if subtypes:
+                true_type = ut.random.choice(subtypes)
+                false_type = ut.random.choice(subtypes)
+                tmp_t = ut.random.choice(subtypes)
+                # Find which of the given types is the supertype.
+                cond_type = functools.reduce(
+                    lambda acc, x: acc if x.is_subtype(acc) else x,
+                    [true_type, false_type],
+                    tmp_t
+                )
+            else:
+                true_type, false_type, cond_type = etype, etype, etype
         else:
             true_type, false_type, cond_type = etype, etype, etype
         true_expr = self.generate_expr(true_type, only_leaves, subtype=False)
@@ -1324,7 +1332,8 @@ class Generator():
         var = ut.random.choice(final_vars)
         var_type = var.get_type()
         subtypes = tu.find_subtypes(var_type, self.get_types(),
-                                    include_self=False, concrete_only=True)
+                                    include_self=False, concrete_only=True,
+                                    blacklist=self._blacklisted_classes)
         subtypes = self._filter_subtypes(subtypes, var_type)
         if not subtypes:
             return self.generate_expr(expr_type, only_leaves=True,
@@ -1752,6 +1761,8 @@ class Generator():
         # are regular classes (no interfaces or abstract classes).
         subclasses = []
         for c in class_decls:
+            if c.name in self._blacklisted_classes:
+                continue
             if c.class_type != ast.ClassDeclaration.REGULAR:
                 continue
             if c.is_parameterized():

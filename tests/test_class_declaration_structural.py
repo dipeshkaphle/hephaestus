@@ -24,7 +24,7 @@ def test_class_declaration_default_nominal_typing():
 
     # Should be SimpleClassifier (nominal typing)
     assert isinstance(class_type, tp.SimpleClassifier)
-    assert not isinstance(class_type, tp.StructuralClassifier)
+    assert not class_type.structural
     assert class_type.name == "MyClass"
 
 
@@ -42,7 +42,7 @@ def test_class_declaration_explicit_nominal_typing():
 
     # Should be SimpleClassifier (nominal typing)
     assert isinstance(class_type, tp.SimpleClassifier)
-    assert not isinstance(class_type, tp.StructuralClassifier)
+    assert not class_type.structural
 
 
 def test_class_declaration_structural_typing():
@@ -57,8 +57,9 @@ def test_class_declaration_structural_typing():
 
     class_type = class_decl.get_type()
 
-    # Should be StructuralClassifier
-    assert isinstance(class_type, tp.StructuralClassifier)
+    # Should be SimpleClassifier with structural=True
+    assert isinstance(class_type, tp.SimpleClassifier)
+    assert class_type.structural
     assert class_type.name == "MyClass"
 
     # Should have field signatures
@@ -103,11 +104,11 @@ def test_generic_class_declaration_structural():
 
     class_type = class_decl.get_type()
 
-    # Should be TypeConstructor with StructuralClassifier
+    # Should be TypeConstructor with structural classifier
     assert isinstance(class_type, tp.TypeConstructor)
     assert class_type.name == "Box"
     assert class_type.classifier is not None
-    assert isinstance(class_type.classifier, tp.StructuralClassifier)
+    assert class_type.classifier.structural
 
     # Classifier should have field signatures with type parameter
     assert len(class_type.classifier.field_signatures) == 1
@@ -136,8 +137,9 @@ def test_structural_class_with_methods():
 
     class_type = class_decl.get_type()
 
-    # Should be StructuralClassifier with method signatures
-    assert isinstance(class_type, tp.StructuralClassifier)
+    # Should be SimpleClassifier with structural=True and method signatures
+    assert isinstance(class_type, tp.SimpleClassifier)
+    assert class_type.structural
     assert len(class_type.method_signatures) == 1
     assert class_type.method_signatures[0].name == "foo"
     assert class_type.method_signatures[0].return_type == ret_type
