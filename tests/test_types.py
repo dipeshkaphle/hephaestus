@@ -1,5 +1,5 @@
 from src.ir import types as tp, kotlin_types as kt, java_types as jt, \
-        groovy_types as gt
+        groovy_types as gt, typescript_types as tst
 
 
 def test_parameterized_supertypes_simple():
@@ -416,3 +416,130 @@ def test_get_bound_rec_wildcards():
     type_param = tp.TypeParameter("T")
     wildcard = tp.WildCardType(type_param, tp.Covariant)
     assert wildcard.get_bound_rec() == type_param
+
+
+def test_structural_sibling_classes_not_subtypes():
+    """
+    Test that sibling structural classes are not subtypes of each other.
+    This reproduces the bug from bugs/rAwZN/53/Main.ts where Ankhs was
+    incorrectly considered a subtype of Nyerere.
+
+    Ankhs and Nyerere are siblings (both extend Amperes) but have
+    different methods, so they should NOT be subtypes of each other.
+    """
+    # Create base class Amperes
+    amperes = tp.StructuralClassifier(
+        'Amperes',
+        supertypes=[],
+        field_signatures=[],
+        method_signatures=[]
+    )
+
+    # Create Ankhs class extending Amperes with method slits()
+    ankhs_method = tp.MethodInfo(
+        name='slits',
+        param_types=[],
+        return_type=kt.Integer
+    )
+    ankhs = tp.StructuralClassifier(
+        'Ankhs',
+        supertypes=[amperes],
+        field_signatures=[],
+        method_signatures=[ankhs_method]
+    )
+
+    # Create Nyerere class extending Amperes with methods focused() and domestic()
+    nyerere_focused = tp.MethodInfo(
+        name='focused',
+        param_types=[],  # Simplified - actual has param but not relevant for this test
+        return_type=kt.Integer
+    )
+    nyerere_domestic = tp.MethodInfo(
+        name='domestic',
+        param_types=[],
+        return_type=kt.Integer
+    )
+    nyerere = tp.StructuralClassifier(
+        'Nyerere',
+        supertypes=[amperes],
+        field_signatures=[],
+        method_signatures=[nyerere_focused, nyerere_domestic]
+    )
+
+    # Ankhs should NOT be a subtype of Nyerere (missing focused() and domestic())
+    assert not ankhs.is_subtype(nyerere), \
+        "Ankhs should not be subtype of Nyerere - missing methods focused() and domestic()"
+
+    # Nyerere should NOT be a subtype of Ankhs (missing slits())
+    assert not nyerere.is_subtype(ankhs), \
+        "Nyerere should not be subtype of Ankhs - missing method slits()"
+
+    # Both should still be subtypes of Amperes (their parent)
+    assert ankhs.is_subtype(amperes), "Ankhs should be subtype of parent Amperes"
+    assert nyerere.is_subtype(amperes), "Nyerere should be subtype of parent Amperes"
+
+    # Additional check: find_subtypes should not include sibling
+    from src.ir import type_utils as tu
+    all_classes = [amperes, ankhs, nyerere]
+
+    ankhs_subtypes = tu.find_subtypes(ankhs, all_classes, include_self=True)
+    assert nyerere not in ankhs_subtypes, \
+        "find_subtypes(Ankhs) should not include sibling Nyerere"
+
+    nyerere_subtypes = tu.find_subtypes(nyerere, all_classes, include_self=True)
+    assert ankhs not in nyerere_subtypes, \
+        "find_subtypes(Nyerere) should not include sibling Ankhs"
+
+def test_structural_subtyping_of_parameterized_type():
+    """
+    Tests that a concrete structural class is correctly seen as a subtype
+    of a parameterized structural interface it implements.
+    This replicates the core issue from bugs/tucOQ.
+    """
+    # 0. Get TypeScript types from a factory
+    factory = tst.TypeScriptBuiltinFactory()
+    string_type = factory.get_string_type()
+    number_type = factory.get_number_type()
+
+    # 1. Define a generic structural interface: IGeneric<T> { foo(p: T): String; }
+    t_param = tp.TypeParameter("T")
+    generic_method = tp.MethodInfo(
+        name='foo',
+        param_types=[t_param],
+        return_type=string_type
+    )
+    generic_classifier = tp.SimpleClassifier(
+        name='IGeneric',
+        method_signatures=[generic_method],
+        structural=True,
+        is_complete=True  # It's complete by definition here
+    )
+    generic_constructor = tp.TypeConstructor(
+        name='IGeneric',
+        type_parameters=[t_param],
+        classifier=generic_classifier
+    )
+
+    # 2. Instantiate the interface to IGeneric<Number>
+    parameterized_interface = generic_constructor.new([number_type])
+
+    # 3. Define a concrete class: Concrete { foo(p: Number): String; }
+    concrete_method = tp.MethodInfo(
+        name='foo',
+        param_types=[number_type],
+        return_type=string_type
+    )
+    concrete_classifier = tp.SimpleClassifier(
+        name='Concrete',
+        method_signatures=[concrete_method],
+        structural=True,
+        is_complete=True
+    )
+
+    # 4. Assert that Concrete is a subtype of IGeneric<Number>
+    # This is the check that we expect to fail until the bug is fixed.
+    assert concrete_classifier.is_subtype(parameterized_interface), \
+        "Concrete class should be a subtype of the parameterized interface it implements"
+    # 4. Assert that IGeneric<Number> is a subtype of Concrete
+    assert parameterized_interface.is_subtype(concrete_classifier), \
+        ""

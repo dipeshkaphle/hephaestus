@@ -539,7 +539,7 @@ class ClassDeclaration(Declaration):
                  functions: List[FunctionDeclaration] = [],
                  is_final=True,
                  type_parameters: List[types.TypeParameter] = [],
-                 structural: bool = False):
+                 structural: bool = False, is_complete: bool = False):
         self.name = name
         self.superclasses = superclasses
         self.class_type = class_type or self.REGULAR
@@ -548,6 +548,7 @@ class ClassDeclaration(Declaration):
         self.is_final = is_final
         self.type_parameters = type_parameters
         self.structural = structural
+        self.is_complete = is_complete
         self.supertypes = [s.class_type for s in self.superclasses]
 
     @property
@@ -587,12 +588,14 @@ class ClassDeclaration(Declaration):
     def get_type(self):
         if self.type_parameters:
             if self.structural:
-                # Structural typing: create StructuralClassifier with field/method signatures
-                classifier = types.StructuralClassifier(
-                    self.name,
+                # Structural typing: create SimpleClassifier with field/method signatures
+                classifier = types.SimpleClassifier(
+                    name=self.name,
                     supertypes=self.supertypes,
                     field_signatures=self.get_field_signatures(),
-                    method_signatures=self.get_method_signatures()
+                    method_signatures=self.get_method_signatures(),
+                    structural=True,
+                    is_complete=self.is_complete
                 )
                 return types.TypeConstructor(
                     self.name,
@@ -601,26 +604,32 @@ class ClassDeclaration(Declaration):
                 )
             else:
                 # Nominal typing (default, backward compatible)
+                classifier = types.SimpleClassifier(
+                    self.name, self.supertypes, is_complete=self.is_complete)
                 return types.TypeConstructor(
                     self.name,
                     self.type_parameters,
-                    self.supertypes
+                    supertypes=self.supertypes,
+                    classifier=classifier
                 )
 
         # Non-generic classes
         if self.structural:
             # Structural typing
-            return types.StructuralClassifier(
-                self.name,
+            return types.SimpleClassifier(
+                name=self.name,
                 supertypes=self.supertypes,
                 field_signatures=self.get_field_signatures(),
-                method_signatures=self.get_method_signatures()
+                method_signatures=self.get_method_signatures(),
+                structural=True,
+                is_complete=self.is_complete
             )
         else:
             # Nominal typing (default, backward compatible)
             return types.SimpleClassifier(
                 self.name,
-                self.supertypes
+                self.supertypes,
+                is_complete=self.is_complete
             )
 
     def get_class_prefix(self):
