@@ -28,6 +28,7 @@ from src import utils as ut
 from src.generators import generators as gens
 from src.generators import utils as gu
 from src.generators.config import cfg
+from src.generators.instrumentation import trace_method, trace_info
 from src.ir import ast, types as tp, type_utils as tu, kotlin_types as kt, typescript_types as tst
 from src.ir.context import Context
 from src.ir.builtins import BuiltinFactory
@@ -186,6 +187,7 @@ class Generator():
             if t_param.bound:
                 t_param.bound = tp.substitute_type(t_param.bound, replaced)
 
+    @trace_method(param_names=['etype', 'not_void', 'abstract', 'is_interface', 'func_name'])
     def gen_func_decl(self,
                       etype:tp.Type=None,
                       not_void=False,
@@ -349,6 +351,7 @@ class Generator():
         param = ast.ParameterDeclaration(name, param_type)
         return param
 
+    @trace_method(param_names=['field_type', 'fret_type', 'not_void', 'class_name'])
     def gen_class_decl(self,
                        field_type: tp.Type=None,
                        fret_type: tp.Type=None,
@@ -788,6 +791,7 @@ class Generator():
             self._add_node_to_parent(self.namespace, field)
         return field
 
+    @trace_method(param_names=['etype', 'only_leaves'])
     def gen_variable_decl(self,
                           etype=None,
                           only_leaves=False,
@@ -828,12 +832,42 @@ class Generator():
 
     ##### Expressions #####
 
+    def _trace_subtype_check(self, method_name: str, subtype: tp.Type,
+                             supertype: tp.Type, result: bool, context_info: dict = None):
+        """
+        Trace a subtype check with detailed proof information.
+
+        Args:
+            method_name: Name of the method performing the check
+            subtype: The potential subtype
+            supertype: The potential supertype
+            result: Result of the is_subtype check
+            context_info: Additional context-specific information
+        """
+        proof = tp.get_subtype_proof(subtype, supertype, self.context)
+
+        # Include ALL proof information - don't summarize
+        trace_data = {
+            'decision': 'subtype_check',
+            'result': result,
+            'subtype': str(subtype),
+            'supertype': str(supertype),
+            **(context_info or {})
+        }
+
+        # Add all proof fields directly (they'll be converted to strings by trace_info)
+        for key, value in proof.items():
+            trace_data[f'proof_{key}'] = value
+
+        trace_info(self, method_name, trace_data)
+
     def _get_class_attributes(self, class_decl, attr_name):
         class_decls = self.context.get_classes(self.namespace).values()
         if attr_name == 'functions':
             return class_decl.get_callable_functions(class_decls)
         return class_decl.get_all_fields(class_decls)
 
+    @trace_method(param_names=['expr_type', 'only_leaves', 'subtype', 'exclude_var', 'gen_bottom', 'sam_coercion'])
     def generate_expr(self,
                       expr_type: tp.Type=None,
                       only_leaves=False,
@@ -868,7 +902,9 @@ class Generator():
             subtype and expr_type != self.bt_factory.get_void_type()
             and ut.random.bool()
         )
+        original_expr_type = expr_type
         expr_type = expr_type or self.select_type()
+
         if find_subtype:
             types_for_subtyping = self.get_types()
             subtypes = tu.find_subtypes(expr_type, self.get_types(),
@@ -879,9 +915,32 @@ class Generator():
                 expr_type = ut.random.choice(subtypes)
                 msg = "Found subtype of {}: {}".format(old_type, expr_type)
                 log(self.logger, msg)
+                # Trace subtype selection
+                trace_info(self, 'generate_expr', {
+                    'decision': 'subtype_selected',
+                    'original_type': str(old_type),
+                    'selected_subtype': str(expr_type),
+                    'num_subtypes': len(subtypes),
+                    'all_subtypes': [str(st) for st in subtypes[:5]]  # First 5 for brevity
+                })
+
         generators = self.get_generators(expr_type, only_leaves, subtype,
                                          exclude_var, sam_coercion=sam_coercion)
-        expr = ut.random.choice(generators)(expr_type)
+
+        # Trace generator selection
+        trace_info(self, 'generate_expr', {
+            'num_generators': len(generators),
+            'target_type': str(expr_type)
+        })
+
+        selected_generator = ut.random.choice(generators)
+        expr = selected_generator(expr_type)
+
+        # Trace generated expression type
+        trace_info(self, 'generate_expr', {
+            'generated_expr_class': type(expr).__name__,
+            'generated_expr_type': str(expr.get_type()) if hasattr(expr, 'get_type') else 'N/A'
+        })
         # Make a probablistic choice, and assign the generated expr
         # into a variable, and return that variable reference.
         gen_var = (
@@ -895,9 +954,16 @@ class Generator():
             var_decl = self.gen_variable_decl(expr_type, only_leaves,
                                               expr=expr)
             expr = ast.Variable(var_decl.name)
+            # Trace variable wrapping
+            trace_info(self, 'generate_expr', {
+                'decision': 'wrapped_in_variable',
+                'var_name': var_decl.name,
+                'var_type': str(var_decl.get_type())
+            })
         return expr
 
     # pylint: disable=unused-argument
+    @trace_method(param_names=['expr_type', 'only_leaves', 'subtype'])
     def gen_assignment(self,
                        expr_type: tp.Type,
                        only_leaves=False,
@@ -934,9 +1000,13 @@ class Generator():
             var_decl.is_final = False
             var_decl.var_type = var_decl.get_type()
             self.depth = initial_depth
-            return ast.Assignment(var_decl.name,
-                                  self.generate_expr(var_decl.get_type(),
-                                                     only_leaves, subtype))
+            expr = self.generate_expr(var_decl.get_type(), only_leaves, subtype)
+            # Trace implicit subtyping in assignment (expr type must be subtype of var type)
+            if subtype and hasattr(expr, 'get_type') and expr.get_type() != var_decl.get_type():
+                self._trace_subtype_check('gen_assignment', expr.get_type(), var_decl.get_type(), True,
+                                         {'purpose': 'assignment_expression_to_variable',
+                                          'var_name': var_decl.name})
+            return ast.Assignment(var_decl.name, expr)
         receiver, variable = ut.random.choice(variables)
         self.depth = initial_depth
         gen_bottom = (
@@ -946,9 +1016,14 @@ class Generator():
                 variable.get_type().has_wildcards()
             )
         )
-        return ast.Assignment(variable.name, self.generate_expr(
-            variable.get_type(), only_leaves, subtype, gen_bottom=gen_bottom),
-                              receiver=receiver,)
+        expr = self.generate_expr(variable.get_type(), only_leaves, subtype, gen_bottom=gen_bottom)
+        # Trace implicit subtyping in field assignment
+        # Note: variable is a FieldDeclaration, expr is an expression AST node
+        if subtype and hasattr(expr, 'get_type') and expr.get_type() != variable.get_type():
+            self._trace_subtype_check('gen_assignment', expr.get_type(), variable.get_type(), True,
+                                     {'purpose': 'assignment_expression_to_field',
+                                      'field_name': variable.name})
+        return ast.Assignment(variable.name, expr, receiver=receiver)
 
     # Where
 
@@ -1028,6 +1103,7 @@ class Generator():
             return None
         return ut.random.choice(assignable_types)
 
+    @trace_method(param_names=['etype', 'only_leaves', 'subtype'])
     def gen_field_access(self,
                          etype: tp.Type,
                          only_leaves=False,
@@ -1058,6 +1134,7 @@ class Generator():
         self.depth = initial_depth
         return ast.FieldAccess(receiver, attr.name)
 
+    @trace_method(param_names=['etype', 'only_leaves', 'subtype'])
     def gen_variable(self,
                      etype: tp.Type,
                      only_leaves=False,
@@ -1086,10 +1163,20 @@ class Generator():
         # If we need to use a variable of a specific types, then filter
         # all variables that match this specific type.
         if subtype:
-            fun = lambda v, t: v.get_type().is_assignable(t)
+            # Filter with detailed tracing
+            matching_vars = []
+            for v in variables:
+                v_type = v.get_type()
+                if v_type.is_assignable(etype):
+                    matching_vars.append(v)
+                    # Trace each successful assignment check with detailed proof
+                    if v_type != etype:
+                        self._trace_subtype_check('gen_variable', v_type, etype, True,
+                                                 {'purpose': 'variable_type_assignment',
+                                                  'var_name': v.name})
+            variables = matching_vars
         else:
-            fun = lambda v, t: v.get_type() == t
-        variables = [v for v in variables if fun(v, etype)]
+            variables = [v for v in variables if v.get_type() == etype]
         if not variables:
             return self.generate_expr(etype, only_leaves=only_leaves,
                                       subtype=subtype, exclude_var=True)
@@ -1225,6 +1312,7 @@ class Generator():
             return ast.EqualityExpr(e1, e2, op)
         return ast.ComparisonExpr(e1, e2, op)
 
+    @trace_method(param_names=['etype', 'only_leaves', 'subtype'])
     def gen_conditional(self,
                         etype: tp.Type,
                         only_leaves=False,
@@ -1254,11 +1342,26 @@ class Generator():
                 false_type = ut.random.choice(subtypes)
                 tmp_t = ut.random.choice(subtypes)
                 # Find which of the given types is the supertype.
+                def find_supertype(acc, x):
+                    result = x.is_subtype(acc)
+                    self._trace_subtype_check('gen_conditional', x, acc, result,
+                                             {'purpose': 'finding_common_supertype'})
+                    return acc if result else x
                 cond_type = functools.reduce(
-                    lambda acc, x: acc if x.is_subtype(acc) else x,
+                    find_supertype,
                     [true_type, false_type],
                     tmp_t
                 )
+                # Trace subtype selection
+                trace_info(self, 'gen_conditional', {
+                    'decision': 'subtype_selected',
+                    'original_type': str(etype),
+                    'true_branch_type': str(true_type),
+                    'false_branch_type': str(false_type),
+                    'conditional_type': str(cond_type),
+                    'num_subtypes': len(subtypes),
+                    'all_subtypes': [str(st) for st in subtypes[:5]]
+                })
             else:
                 true_type, false_type, cond_type = etype, etype, etype
         else:
@@ -1339,6 +1442,15 @@ class Generator():
             return self.generate_expr(expr_type, only_leaves=True,
                                       subtype=subtype)
 
+        # Trace subtype selection for is expression
+        trace_info(self, 'gen_is_expr', {
+            'decision': 'subtype_selected',
+            'var_name': var.name,
+            'var_type': str(var_type),
+            'num_subtypes': len(subtypes),
+            'all_subtypes': [str(st) for st in subtypes[:5]]
+        })
+
         subtype = ut.random.choice(subtypes)
         initial_decls = _get_extra_decls(self.namespace)
         prev_namespace = self.namespace
@@ -1410,11 +1522,16 @@ class Generator():
             # }
             if t.is_parameterized():
                 t_con = t.t_constructor
-                if t_con.is_subtype(initial_type):
+                result = t_con.is_subtype(initial_type)
+                if result:
+                    self._trace_subtype_check('_filter_subtypes', t_con, initial_type, result,
+                                             {'purpose': 'filtering_kotlin_parameterized_type',
+                                              'filtered_out': str(t)})
                     continue
             new_subtypes.append(t)
         return new_subtypes
 
+    @trace_method(param_names=['etype', 'not_void', 'only_leaves'])
     def gen_lambda(self,
                    etype: tp.Type=None,
                    not_void=False,
@@ -1465,6 +1582,7 @@ class Generator():
 
         return res
 
+    @trace_method(param_names=['etype', 'only_leaves', 'subtype'])
     def gen_func_call(self,
                       etype: tp.Type,
                       only_leaves=False,
@@ -1494,6 +1612,7 @@ class Generator():
 
     # gen_func_call Where
 
+    @trace_method(param_names=['etype', 'only_leaves', 'subtype'])
     def _gen_func_call(self,
                        etype: tp.Type,
                        only_leaves=False,
@@ -1546,6 +1665,12 @@ class Generator():
             if not param.vararg:
                 arg = self.generate_expr(expr_type, only_leaves,
                                          gen_bottom=gen_bottom)
+                # Trace implicit subtyping in function argument passing
+                if hasattr(arg, 'get_type') and arg.get_type() != expr_type:
+                    self._trace_subtype_check('_gen_func_call', arg.get_type(), expr_type, True,
+                                             {'purpose': 'function_argument_passing',
+                                              'function': func.name,
+                                              'param_name': param.name})
                 if param.default and self.language != 'typescript':
                     if self.language == 'kotlin' and ut.random.bool():
                         # Randomly skip some default arguments.
@@ -1556,12 +1681,17 @@ class Generator():
             else:
                 # This param is a vararg, so provide a random number of
                 # arguments.
-                for _ in range(ut.random.integer(0, 3)):
-                    args.append(ast.CallArgument(
-                        self.generate_expr(
-                            expr_type.type_args[0],
-                            only_leaves,
-                            gen_bottom=gen_bottom)))
+                for i in range(ut.random.integer(0, 3)):
+                    vararg_type = expr_type.type_args[0]
+                    arg = self.generate_expr(vararg_type, only_leaves, gen_bottom=gen_bottom)
+                    # Trace implicit subtyping in vararg argument
+                    if hasattr(arg, 'get_type') and arg.get_type() != vararg_type:
+                        self._trace_subtype_check('_gen_func_call', arg.get_type(), vararg_type, True,
+                                                 {'purpose': 'vararg_argument_passing',
+                                                  'function': func.name,
+                                                  'param_name': param.name,
+                                                  'vararg_index': i})
+                    args.append(ast.CallArgument(arg))
         self.depth = initial_depth
         type_args = (
             []
@@ -1605,6 +1735,11 @@ class Generator():
             ret_type = var_type.type_args[-1]
             if (subtype and ret_type.is_assignable(etype)) or ret_type == etype:
                 refs.append((var_type, var.name, None))
+                # Trace subtype match for function reference with detailed proof
+                if subtype and ret_type.is_assignable(etype) and ret_type != etype:
+                    self._trace_subtype_check('_gen_func_call_ref', ret_type, etype, True,
+                                             {'purpose': 'function_return_type_assignment',
+                                              'function_var': var.name})
 
         if not refs:
             # Detect receivers
@@ -1637,6 +1772,7 @@ class Generator():
                                 is_ref_call=True)
 
     # pylint: disable=unused-argument
+    @trace_method(param_names=['etype', 'only_leaves', 'subtype', 'sam_coercion'])
     def gen_new(self,
                 etype: tp.Type,
                 only_leaves=False,
@@ -1767,19 +1903,40 @@ class Generator():
                 continue
             if c.is_parameterized():
                 t_con = getattr(etype, 't_constructor', None)
-                if c.get_type() == t_con or (
-                        subtype and c.get_type().is_subtype(etype)):
+                class_type = c.get_type()
+                is_subtype_result = class_type.is_subtype(etype) if subtype else False
+                if class_type == t_con or (subtype and is_subtype_result):
                     subclasses.append(c)
+                    # Trace subtype match for parameterized class with detailed proof
+                    if subtype and is_subtype_result and class_type != t_con:
+                        self._trace_subtype_check('_get_subclass', class_type, etype, True,
+                                                 {'purpose': 'selecting_parameterized_subclass',
+                                                  'class_name': c.name})
             else:
-                if c.get_type() == etype or (
-                        subtype and c.get_type().is_subtype(etype)):
+                class_type = c.get_type()
+                is_subtype_result = class_type.is_subtype(etype) if subtype else False
+                if class_type == etype or (subtype and is_subtype_result):
                     subclasses.append(c)
+                    # Trace subtype match for non-parameterized class with detailed proof
+                    if subtype and is_subtype_result and class_type != etype:
+                        self._trace_subtype_check('_get_subclass', class_type, etype, True,
+                                                 {'purpose': 'selecting_non_parameterized_subclass',
+                                                  'class_name': c.name})
         if not subclasses:
             return None
         # FIXME what happens if subclasses is empty?
         # it may happens due to ParameterizedType with TypeParameters as targs
-        return ut.random.choice(
+        selected = ut.random.choice(
             [s for s in subclasses if s.name == etype.name] or subclasses)
+        # Trace final subclass selection
+        if subtype and subclasses:
+            trace_info(self, '_get_subclass', {
+                'decision': 'subtype_selected',
+                'target_type': str(etype),
+                'selected_class': selected.name,
+                'num_candidates': len(subclasses)
+            })
+        return selected
 
     # And
 
@@ -2061,6 +2218,7 @@ class Generator():
             log(self.logger, msg)
         return stype
 
+    @trace_method(param_names=['count', 'with_variance', 'for_function'])
     def gen_type_params(self,
                         count: int=None,
                         with_variance=False,
@@ -2543,6 +2701,7 @@ class Generator():
                                                       'functions',
                                                       signature=signature)
 
+    @trace_method(param_names=['etype', 'not_void', 'signature'])
     def _gen_matching_func(self,
                            etype: tp.Type,
                            not_void=False,
@@ -2695,7 +2854,13 @@ class Generator():
         attr_type = get_attr_type(attr, type_var_map)
         if not check_signature:
             if subtype:
-                return attr_type.is_assignable(etype)
+                is_assignable = attr_type.is_assignable(etype)
+                # Trace subtype checking with detailed proof
+                if is_assignable and attr_type != etype:
+                    self._trace_subtype_check('_is_sigtype_compatible', attr_type, etype, True,
+                                             {'purpose': 'attribute_type_compatibility',
+                                              'attr_name': attr.name if hasattr(attr, 'name') else 'unknown'})
+                return is_assignable
             return attr_type == etype
         param_types = [
             tp.substitute_type(p.get_type(), type_var_map)
@@ -2799,6 +2964,7 @@ class Generator():
                 class_decls.append((c, type_var_map, attr))
         return class_decls
 
+    @trace_method(param_names=['etype', 'attr_name', 'not_void', 'signature'])
     def _gen_matching_class(self,
                             etype: tp.Type,
                             attr_name: str,
@@ -2935,8 +3101,14 @@ class Generator():
             type_param = ut.random.choice(available_type_params)
             available_type_params.remove(type_param)
             if bounds != [None]:
+                # Find the most specific bound (greatest lower bound)
+                def find_glb(acc, t):
+                    result = t.is_subtype(acc)
+                    self._trace_subtype_check('_create_type_params_from_etype', t, acc, result,
+                                             {'purpose': 'computing_type_parameter_bound'})
+                    return t if result else acc
                 type_param.bound = functools.reduce(
-                    lambda acc, t: t if t.is_subtype(acc) else acc,
+                    find_glb,
                     filter(lambda t: t is not None, bounds), bounds[0])
             else:
                 type_param.bound = None

@@ -161,7 +161,16 @@ def save_program(program, program_str, program_file):
     utils.mkdir(dst_dir)
     # Save the program
     utils.save_text(program_file, program_str)
-    utils.dump_program(program_file + ".bin", program)
+
+    # Save program with trace if tracing is enabled
+    if cli_args.trace and hasattr(program.context, 'debug_tracer'):
+        utils.dump_program_with_trace(
+            program_file + ".bin",
+            program_file + ".trace.json",
+            program
+        )
+    else:
+        utils.dump_program(program_file + ".bin", program)
 
 
 def save_stats():
