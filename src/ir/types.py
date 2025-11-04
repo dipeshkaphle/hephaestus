@@ -220,6 +220,29 @@ def is_structural_type(t: Type) -> bool:
 
     return False
 
+def is_complete(t: Type) -> bool:
+    """
+    Check if a type is complete (fully generated).
+
+    For SimpleClassifier: check the is_complete flag directly.
+    For TypeConstructor/ParameterizedType: check the classifier's is_complete flag.
+    """
+    # Check TypeConstructor/ParameterizedType classifiers first
+    if hasattr(t, 't_constructor') and hasattr(t.t_constructor, 'classifier'):
+        classifier = t.t_constructor.classifier
+        if classifier is not None:
+            return getattr(classifier, 'is_complete', False)
+
+    # Check direct classifier (for TypeConstructor)
+    if hasattr(t, 'classifier') and t.classifier is not None:
+        return getattr(t.classifier, 'is_complete', False)
+
+    # Finally check the is_complete attribute directly
+    if hasattr(t, 'is_complete'):
+        return t.is_complete
+
+    return True
+
 
 class SimpleClassifier(Classifier):
     """https://kotlinlang.org/spec/type-system.html#simple-classifier-types
@@ -384,14 +407,7 @@ class SimpleClassifier(Classifier):
         # Heuristic to detect incomplete structural types during generation.
         # If the 'other' type appears to be an empty, user-defined class,
         # we assume it's an incomplete definition and fail the check.
-        is_other_complete = True
-        if other.is_parameterized():
-            if hasattr(other, 't_constructor') and hasattr(other.t_constructor, 'classifier'):
-                classifier = other.t_constructor.classifier
-                if classifier and hasattr(classifier, 'is_complete'):
-                    is_other_complete = classifier.is_complete
-        elif hasattr(other, 'is_complete'):
-            is_other_complete = other.is_complete
+        is_other_complete = is_complete(other)
 
         if not is_other_complete:
             return False
@@ -859,7 +875,7 @@ def _create_substituted_structural_classifier(parameterized_type):
         SimpleClassifier with structural=True and substituted type parameters
     """
     classifier = parameterized_type.t_constructor.classifier
-    if not (classifier and getattr(classifier, 'structural', False)):
+    if not is_structural_type(classifier):
         return None
 
     # Get type substitution map
@@ -891,7 +907,7 @@ def _create_substituted_structural_classifier(parameterized_type):
         field_signatures=substituted_fields,
         method_signatures=substituted_methods,
         structural=True,
-        is_complete=True
+        is_complete=is_complete(classifier)
     )
 
 
@@ -906,7 +922,9 @@ class ParameterizedType(SimpleClassifier):
                 len(self.t_constructor.type_parameters), self.t_constructor)
         self._can_infer_type_args = can_infer_type_args
         super().__init__(self.t_constructor.name,
-                         self.t_constructor.supertypes, is_complete=True)
+                         self.t_constructor.supertypes, is_complete=(is_complete(self.t_constructor.classifier)))
+        # Set structural flag based on the type constructor's classifier
+        self.structural = is_structural_type(self.t_constructor)
         # XXX revisit
         self.supertypes = copy(self.t_constructor.supertypes)
 
@@ -1174,3 +1192,186 @@ class NothingType(Classifier):
 
 
 Nothing = NothingType()
+
+
+def get_subtype_proof(subtype: Type, supertype: Type, context=None) -> Dict[str, any]:
+    """
+    Generate detailed proof information for a subtype check.
+
+    This function captures comprehensive information about why a subtype
+    relationship holds (or doesn't), including type structure, fields,
+    methods, and the reasoning behind the subtype decision.
+
+    Args:
+        subtype: The potential subtype
+        supertype: The potential supertype
+        context: Optional Context object for accessing declarations
+
+    Returns:
+        Dictionary containing detailed proof information
+    """
+    proof = {
+        'subtype_name': str(subtype),
+        'supertype_name': str(supertype),
+        'result': subtype.is_subtype(supertype)
+    }
+
+    # Basic type classification
+    proof['subtype_info'] = _get_type_info(subtype)
+    proof['supertype_info'] = _get_type_info(supertype)
+
+    # Try to get detailed structural information
+    if hasattr(subtype, '_get_all_fields'):
+        try:
+            subtype_fields = subtype._get_all_fields()
+            proof['subtype_fields'] = [
+                {'name': name, 'type': str(field.field_type)}
+                for name, field in list(subtype_fields.items())[:10]
+            ]
+            if len(subtype_fields) > 10:
+                proof['subtype_fields_truncated'] = len(subtype_fields) - 10
+        except Exception:
+            proof['subtype_fields'] = 'unavailable'
+
+    if hasattr(subtype, '_get_all_methods'):
+        try:
+            subtype_methods = subtype._get_all_methods()
+            proof['subtype_methods'] = [
+                {
+                    'name': name,
+                    'params': [str(p) for p in method.param_types],
+                    'return': str(method.return_type)
+                }
+                for name, method in list(subtype_methods.items())[:10]
+            ]
+            if len(subtype_methods) > 10:
+                proof['subtype_methods_truncated'] = len(subtype_methods) - 10
+        except Exception:
+            proof['subtype_methods'] = 'unavailable'
+
+    if hasattr(supertype, '_get_all_fields'):
+        try:
+            supertype_fields = supertype._get_all_fields()
+            proof['supertype_fields'] = [
+                {'name': name, 'type': str(field.field_type)}
+                for name, field in list(supertype_fields.items())[:10]
+            ]
+            if len(supertype_fields) > 10:
+                proof['supertype_fields_truncated'] = len(supertype_fields) - 10
+        except Exception:
+            proof['supertype_fields'] = 'unavailable'
+
+    if hasattr(supertype, '_get_all_methods'):
+        try:
+            supertype_methods = supertype._get_all_methods()
+            proof['supertype_methods'] = [
+                {
+                    'name': name,
+                    'params': [str(p) for p in method.param_types],
+                    'return': str(method.return_type)
+                }
+                for name, method in list(supertype_methods.items())[:10]
+            ]
+            if len(supertype_methods) > 10:
+                proof['supertype_methods_truncated'] = len(supertype_methods) - 10
+        except Exception:
+            proof['supertype_methods'] = 'unavailable'
+
+    # Add nominal subtyping path if available
+    if proof['result']:
+        try:
+            supertypes = subtype.get_supertypes()
+            if supertype in supertypes or subtype == supertype:
+                # Find the path from subtype to supertype
+                path = _find_nominal_path(subtype, supertype)
+                if path:
+                    proof['nominal_path'] = [str(t) for t in path]
+                    proof['explanation'] = f"Nominal subtyping via inheritance: {' -> '.join(proof['nominal_path'])}"
+                elif hasattr(subtype, 'structural') and subtype.structural:
+                    proof['explanation'] = "Structural subtyping: fields and methods are compatible"
+                else:
+                    proof['explanation'] = "Subtyping relationship holds"
+            elif hasattr(subtype, 'structural') and subtype.structural:
+                proof['explanation'] = "Structural subtyping: fields and methods are compatible"
+            else:
+                proof['explanation'] = "Subtyping relationship holds (possibly via type parameters or wildcards)"
+        except Exception as e:
+            proof['explanation'] = f"Subtyping holds (unable to determine path: {e})"
+    else:
+        proof['explanation'] = "Subtyping relationship does not hold"
+
+    return proof
+
+
+def _get_type_info(type_obj: Type) -> Dict[str, any]:
+    """Extract basic classification information about a type."""
+    info = {
+        'type_class': type_obj.__class__.__name__,
+        'is_primitive': type_obj.is_primitive(),
+        'is_parameterized': type_obj.is_parameterized(),
+        'is_type_constructor': type_obj.is_type_constructor(),
+        'is_type_var': type_obj.is_type_var(),
+        'is_wildcard': type_obj.is_wildcard(),
+    }
+
+    # Structural typing info
+    info['is_structural'] = is_structural_type(type_obj)
+    info['is_complete'] = is_complete(type_obj)
+
+    # Parameterized type info
+    if isinstance(type_obj, ParameterizedType):
+        info['type_constructor'] = str(type_obj.t_constructor)
+        info['type_args'] = [str(arg) for arg in type_obj.type_args]
+        try:
+            type_var_map = type_obj.get_type_variable_assignments()
+            info['type_variable_assignments'] = {
+                str(k): str(v) for k, v in type_var_map.items()
+            }
+        except Exception:
+            pass
+
+        # Get variance information
+        if hasattr(type_obj.t_constructor, 'type_parameters'):
+            info['type_param_variances'] = [
+                tp.variance.variance_to_str() if hasattr(tp, 'variance') else 'invariant'
+                for tp in type_obj.t_constructor.type_parameters
+            ]
+
+    # Type parameter info
+    if isinstance(type_obj, TypeParameter):
+        if hasattr(type_obj, 'variance'):
+            info['variance'] = type_obj.variance.variance_to_str()
+        if hasattr(type_obj, 'bound') and type_obj.bound:
+            info['bound'] = str(type_obj.bound)
+
+    return info
+
+
+def _find_nominal_path(subtype: Type, supertype: Type) -> List[Type]:
+    """
+    Find the inheritance path from subtype to supertype.
+
+    Returns a list of types forming the path, or empty list if no nominal path exists.
+    """
+    if subtype == supertype:
+        return [subtype]
+
+    # BFS to find shortest path
+    from collections import deque
+    queue = deque([(subtype, [subtype])])
+    visited = {subtype}
+
+    while queue:
+        current, path = queue.popleft()
+
+        if current == supertype:
+            return path
+
+        # Explore supertypes
+        if hasattr(current, 'supertypes'):
+            for parent in current.supertypes:
+                if parent not in visited:
+                    visited.add(parent)
+                    queue.append((parent, path + [parent]))
+
+    return []
