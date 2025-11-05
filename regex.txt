@@ -1,3 +1,4 @@
 .*This condition will always return.*
 .*no overlap.*
 .*kind of expression is always falsy.*
+.*Type 'number' is not assignable to type '[+-]?(\d+(\.\d*)?|\.\d+)'.*

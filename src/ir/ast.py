@@ -104,6 +104,12 @@ class Program(Node):
             ClassDeclaration: self.context.add_class,
             VariableDeclaration: self.context.add_var,
         }
+        # Add language-specific declaration types (e.g., TypeAliasDeclaration for TypeScript)
+        # Factory handlers expect (gen, namespace, name, decl) where gen is an object with .context
+        # Program also has .context, so we can pass self
+        for decl_class, factory_handler in self.bt_factory.update_add_node_to_parent().items():
+            decl_types[decl_class] = lambda ns, name, d, handler=factory_handler: handler(self, ns, name, d)
+
         decl_types[decl.__class__](GLOBAL_NAMESPACE, decl.name, decl)
         if isinstance(decl, ClassDeclaration):
             self._add_class(GLOBAL_NAMESPACE, decl)

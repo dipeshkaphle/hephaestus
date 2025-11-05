@@ -99,8 +99,9 @@ def _find_candidate_type_args(t_param: tp.TypeParameter,
     if bound and bound.is_parameterized():
         # If bound is `parameterized`, we seek for another type argument that
         # is subtype of the the `new` bound.
-        base_targ = _replace_type_argument(base_targ, bound, types,
-                                           t_param.bound.has_type_variables())
+        has_type_vars = (hasattr(t_param.bound, 'has_type_variables') and
+                         t_param.bound.has_type_variables())
+        base_targ = _replace_type_argument(base_targ, bound, types, has_type_vars)
     # If `base_targ` is None, this means that
     # we cannot find candidate type arguments that satisfy the bound of
     # the corresponding type parameter.
@@ -587,7 +588,8 @@ def _compute_type_variable_assignments(
             if not a_types:
                 if t_param.bound:
                     if not t_param.bound.is_type_var():
-                        if t_param.bound.has_type_variables():
+                        if (hasattr(t_param.bound, 'has_type_variables') and
+                                t_param.bound.has_type_variables()):
                             bound = tp.substitute_type(
                                 t_param.bound, type_var_map)
                         else:
@@ -865,7 +867,9 @@ def get_type_hint(expr, context: ctx.Context, namespace: Tuple[str],
         if decl is None:
             return None
         decl, rec_t = decl
-        if decl.get_type().has_type_variables():
+        decl_type = decl.get_type()
+        if (hasattr(decl_type, 'has_type_variables') and
+                decl_type.has_type_variables()):
             if rec_t.is_parameterized():
                 # Here, the return type can have a type parameter taken
                 # from a function.
@@ -1044,9 +1048,21 @@ def unify_types(t1: tp.Type, t2: tp.Type, factory,
       class A<T>
       class B : A<String>()
     """
-    if t2.is_compound() and not t2.is_parameterized():
+    # Defensive checks for is_compound() method availability
+    # Use try-except to handle cases where is_compound might be unbound method
+    try:
+        t2_is_compound = hasattr(t2, 'is_compound') and callable(getattr(t2, 'is_compound', None)) and t2.is_compound()
+    except (TypeError, AttributeError):
+        t2_is_compound = False
+
+    try:
+        t1_is_compound = hasattr(t1, 'is_compound') and callable(getattr(t1, 'is_compound', None)) and t1.is_compound()
+    except (TypeError, AttributeError):
+        t1_is_compound = False
+
+    if t2_is_compound and not t2.is_parameterized():
         return t2.unify_types(t1, factory, same_type)
-    elif t1.is_compound() and t2.is_type_var():
+    elif t1_is_compound and t2.is_type_var():
         bound = t2.get_bound_rec(factory)
         if bound is None or t1.is_subtype(bound):
             return {t2: t1}
@@ -1096,7 +1112,8 @@ def unify_types(t1: tp.Type, t2: tp.Type, factory,
             t_arg2 = t_arg2.bound
             t_arg1 = t_arg1.bound
 
-        is_type_var = t_arg2.has_type_variables()
+        is_type_var = (hasattr(t_arg2, 'has_type_variables') and
+                       t_arg2.has_type_variables())
 
         if not is_type_var:
             if t_arg1 != t_arg2:
@@ -1114,8 +1131,11 @@ def unify_types(t1: tp.Type, t2: tp.Type, factory,
                     if not _update_type_var_map(type_var_map, t_var, t_arg1):
                         return {}
                     continue
-                is_parameterized = t_var.bound.is_compound()
-                is_parameterized2 = t_arg1.is_compound()
+                # Defensive checks for is_compound() method availability
+                is_parameterized = (hasattr(t_var.bound, 'is_compound') and
+                                    t_var.bound.is_compound())
+                is_parameterized2 = (hasattr(t_arg1, 'is_compound') and
+                                     t_arg1.is_compound())
                 if is_parameterized and is_parameterized2:
                     res = unify_types(t_arg1, t_var.bound, factory)
                     if not res or any(
