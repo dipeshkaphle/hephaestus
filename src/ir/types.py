@@ -350,7 +350,12 @@ class SimpleClassifier(Classifier):
                 return False
 
         # Check return type (covariant: self_return <: other_return)
-        if not self_method_sig.return_type.is_subtype(other_method_sig.return_type):
+        # Handle None return types (e.g., constructors or void methods)
+        if self_method_sig.return_type is None and other_method_sig.return_type is None:
+            return True
+        elif self_method_sig.return_type is None or other_method_sig.return_type is None:
+            return False
+        elif not self_method_sig.return_type.is_subtype(other_method_sig.return_type):
             return False
 
         return True

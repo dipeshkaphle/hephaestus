@@ -464,6 +464,10 @@ class TypeDependencyAnalysis(DefaultVisitor):
         )
 
     def _get_receiver_type(self, receiver_t):
+        # Handle None receiver types (e.g., unbounded type variables)
+        if receiver_t is None:
+            return None, {}
+
         # If the receiver type is parameterized, compute type variable
         # assignments.
         if receiver_t.is_parameterized():
@@ -492,6 +496,9 @@ class TypeDependencyAnalysis(DefaultVisitor):
         if receiver_t is None:
             return
         receiver_t, type_var_map = self._get_receiver_type(receiver_t)
+        # _get_receiver_type can return None for unbounded type variables
+        if receiver_t is None:
+            return
         f = tu.get_decl_from_inheritance(receiver_t, node.name, self._context)
         assert f is not None, (
             "Field " + node.name + " was not found in class " +
@@ -797,6 +804,9 @@ class TypeDependencyAnalysis(DefaultVisitor):
                 return
 
             receiver_t, _ = self._get_receiver_type(receiver_t)
+            # _get_receiver_type can return None for unbounded type variables
+            if receiver_t is None:
+                return
             fun_decl = tu.get_decl_from_inheritance(receiver_t,
                                                     node.func, self._context)
             if fun_decl is None:
@@ -991,12 +1001,15 @@ class TypeDependencyAnalysis(DefaultVisitor):
             # In this case, we connect T2 -> T1 (i.e., meaning that the
             # compiler can infer the type argument of T2, if it knows the
             # type argument of T1).
-            if t_param.bound and t_param.bound.has_type_variables():
+            if t_param.bound and hasattr(t_param.bound, 'has_type_variables') \
+                    and t_param.bound.has_type_variables():
                 if t_param.bound.is_type_var():
                     type_vars = [t_param.bound]
-                else:
+                elif hasattr(t_param.bound, 'get_type_variables'):
                     type_vars = t_param.bound.get_type_variables(
                         self._bt_factory)
+                else:
+                    type_vars = []
                 if t_param.bound.is_parameterized():
                     construct_edge(self.type_graph, source,
                                    TypeNode(t_param.bound, None),

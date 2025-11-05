@@ -18,6 +18,21 @@ class TypeOverwriting(Transformation):
         self._candidate_methods = []
         self._selected_method = None
 
+    def get_visitors(self):
+        """Override to add language-specific visitors"""
+        visitors = super().get_visitors()
+        # TypeScript-specific nodes
+        try:
+            from src.ir import typescript_ast as ts_ast
+            visitors[ts_ast.TypeAliasDeclaration] = self.visit_type_alias_decl
+        except ImportError:
+            pass
+        return visitors
+
+    def visit_type_alias_decl(self, node):
+        """Handle TypeScript type alias declarations"""
+        return node
+
     def visit_program(self, node):
         super().visit_program(node)
         self._method_selection = False
