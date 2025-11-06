@@ -3,7 +3,7 @@ from collections import defaultdict
 from typing import NamedTuple, Union, Dict, List
 
 from src import utils, graph_utils as gu
-from src.ir import ast, types as tp, type_utils as tu
+from src.ir import ast, types as tp, type_utils as tu, typescript_types as tst
 from src.ir.context import get_decl
 from src.ir.visitors import DefaultVisitor
 from src.transformations.base import change_namespace
@@ -451,6 +451,12 @@ class TypeDependencyAnalysis(DefaultVisitor):
                                decl_site_type_var, Edge.INFERRED)
         return main_node
 
+    def get_visitors(self):
+        visitors = super().get_visitors()
+        # Language specific node visitors
+        visitors[tst.StringLiteralType] = self._visit_string_literal
+        return visitors
+
     def visit_integer_constant(self, node):
         node_id, _ = self._get_node_id()
         self._inferred_nodes[node_id].append(TypeNode(node.integer_type, None))
@@ -458,6 +464,14 @@ class TypeDependencyAnalysis(DefaultVisitor):
     def visit_real_constant(self, node):
         node_id, _ = self._get_node_id()
         self._inferred_nodes[node_id].append(TypeNode(node.real_type, None))
+
+    def _visit_string_literal(self, node):
+        node_id, _ = self._get_node_id()
+
+        # Typescript has this
+        str_literal_type = tst.StringLiteralType(node.literal)
+        self._inferred_nodes[node_id].append(TypeNode(str_literal_type, None))
+
 
     def visit_string_constant(self, node):
         node_id, _ = self._get_node_id()
