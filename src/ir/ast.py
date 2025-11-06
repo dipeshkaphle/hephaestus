@@ -545,7 +545,7 @@ class ClassDeclaration(Declaration):
                  functions: List[FunctionDeclaration] = [],
                  is_final=True,
                  type_parameters: List[types.TypeParameter] = [],
-                 structural: bool = False, is_complete: bool = False):
+                 structural: bool = False, is_complete: bool = True):
         self.name = name
         self.superclasses = superclasses
         self.class_type = class_type or self.REGULAR

@@ -394,7 +394,8 @@ class Generator():
             is_final=is_final,
             fields=[],
             functions=[],
-            structural=self.language == 'typescript'
+            structural=self.language == 'typescript',
+            is_complete=False
         )
         self._add_node_to_parent(ast.GLOBAL_NAMESPACE, cls)
         self._blacklisted_classes.add(class_name)
