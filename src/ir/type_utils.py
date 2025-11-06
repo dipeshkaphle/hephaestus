@@ -555,7 +555,11 @@ def _compute_type_variable_assignments(
     for i, t_param in enumerate(type_parameters):
         indexes[t_param] = i
         t = type_var_map.get(t_param)
-        if t:
+        if t is not None:
+            # IMPORTANT: If type_var_map provides a constraint for this type parameter,
+            # we MUST use it. This ensures type soundness when instantiating generic classes.
+            # For example, if we determined that T must be String to make a field compatible,
+            # we cannot randomly choose Number instead.
             a_types = [t]
             if t_param.bound and t_param.bound.is_type_var():
                 # We must assign the same type argument to the bound of the

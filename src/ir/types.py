@@ -496,7 +496,7 @@ class MethodInfo:
 # StructuralClassifier has been merged into SimpleClassifier.
 # This function provides backward compatibility.
 def StructuralClassifier(name: str, supertypes: List[Type] = None, check=False,
-                         field_signatures: List = None, method_signatures: List = None, is_complete: bool = False):
+                         field_signatures: List = None, method_signatures: List = None, is_complete: bool = True):
     """
     Create a structural classifier.
 
@@ -509,7 +509,7 @@ def StructuralClassifier(name: str, supertypes: List[Type] = None, check=False,
         check: Whether to check supertype consistency
         field_signatures: List of FieldInfo objects
         method_signatures: List of MethodInfo objects
-        is_complete: Whether the classifier is fully generated
+        is_complete: Whether the classifier is fully generated (default True for tests)
 
     Returns:
         SimpleClassifier with structural=True
@@ -1343,7 +1343,7 @@ def _get_type_info(type_obj: Type) -> Dict[str, any]:
             ]
 
     # Type parameter info
-    if isinstance(type_obj, TypeParameter):
+    if isinstance(type_obj, TypeParameter) or isinstance(type_obj, WildCardType):
         if hasattr(type_obj, 'variance'):
             info['variance'] = type_obj.variance.variance_to_str()
         if hasattr(type_obj, 'bound') and type_obj.bound:

@@ -820,12 +820,24 @@ class Generator():
         # We cannot set ? extends X as the type of a variable.
         vtype = var_type.get_bound_rec() if var_type.is_wildcard() else \
             var_type
+
+        # Determine the actual inferred type based on the expression
+        # If the expression is a Variable reference, look up its type
+        actual_inferred_type = var_type
+        if isinstance(expr, ast.Variable):
+            # Look up the variable's type from context (searches parent namespaces)
+            from src.ir.context import get_decl
+            lookup_result = get_decl(self.context, self.namespace, expr.name)
+            if lookup_result:
+                _, var_decl_ref = lookup_result
+                actual_inferred_type = var_decl_ref.get_type()
+
         var_decl = ast.VariableDeclaration(
             ut.random.identifier('lower'),
             expr=expr,
             is_final=is_final,
             var_type=vtype,
-            inferred_type=var_type)
+            inferred_type=actual_inferred_type)
         self._add_node_to_parent(self.namespace, var_decl)
         return var_decl
 
@@ -2845,6 +2857,25 @@ class Generator():
         msg = "Selected class {} with TypeVarMap {};" " matches {}".format(
             cls.name, params_map, attr_msg)
         log(self.logger, msg)
+
+        # VALIDATION: Ensure that after type substitution, the attribute type
+        # is actually compatible with etype. This prevents bugs where unification
+        # incorrectly maps type parameters from different scopes.
+        if attr_name == 'fields':
+            substituted_attr_type = tp.substitute_type(attr.get_type(), params_map)
+            if subtype:
+                if not substituted_attr_type.is_assignable(etype):
+                    msg = (f"REJECTING: After substitution, field type {substituted_attr_type} "
+                           f"is NOT assignable to target type {etype}")
+                    log(self.logger, msg)
+                    return None
+            else:
+                if substituted_attr_type != etype:
+                    msg = (f"REJECTING: After substitution, field type {substituted_attr_type} "
+                           f"!= target type {etype}")
+                    log(self.logger, msg)
+                    return None
+
         return gu.AttrAccessInfo(cls_type, params_map, attr, func_type_var_map)
 
     def _is_sigtype_compatible(self, attr, etype, type_var_map,
