@@ -487,14 +487,20 @@ class TypeScriptTranslator(BaseTranslator):
 
     @append_to
     def visit_integer_constant(self, node):
-        literal = "BigInt({})".format(str(node.literal)) \
-                    if isinstance(node.integer_type, tst.BigIntegerType) \
-                    else str(node.literal)
+        literal =  ""
+        if isinstance(node.integer_type, tst.BigIntegerType):
+            literal = "BigInt({})".format(str(node.literal))
+        elif isinstance(node.integer_type, tst.NumberLiteralType):
+            literal = "{} as {}".format(str(node.literal), str(node.literal))
+        else:
+            literal = str(node.literal)
         self._children_res.append(" "*self.ident + literal)
 
     @append_to
     def visit_real_constant(self, node):
         literal = str(node.literal)
+        if isinstance(node.real_type, tst.NumberLiteralType):
+            literal = "{} as {}".format(str(node.literal), str(node.literal))
         self._children_res.append(" "*self.ident + literal)
 
     @append_to

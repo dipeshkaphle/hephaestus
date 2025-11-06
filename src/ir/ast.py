@@ -507,7 +507,7 @@ class Lambda(Expr):
         self.body = children[-1]
 
     def get_type(self):
-        return self.ret_type
+        return self.signature
 
     def get_signature(self, function_type: FunctionType):
         type_args = [p.param_type for p in self.params] + [self.ret_type]
