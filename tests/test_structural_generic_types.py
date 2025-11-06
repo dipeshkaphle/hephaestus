@@ -1227,7 +1227,7 @@ def test_bounded_type_parameter_enforces_subtyping():
     repo_json = repository_constructor.new([json_type])
     repo_xml = repository_constructor.new([xml_type])
 
-    # Different type arguments, so not subtypes (invariant)
+    # Different type arguments(but structurally same), so NOT subtypes (invariant)
     assert not repo_json.is_subtype(repo_xml)
     assert not repo_xml.is_subtype(repo_json)
 

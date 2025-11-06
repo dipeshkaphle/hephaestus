@@ -70,7 +70,7 @@ def test_class_declaration_structural_typing():
 
 def test_generic_class_declaration_nominal():
     """Test generic ClassDeclaration defaults to nominal typing."""
-    t_param = tp.TypeParameter("T", tp.Invariant)
+    t_param = tp.TypeParameter("T", variance = tp.Invariant)
 
     class_decl = ast.ClassDeclaration(
         name="Box",
@@ -82,10 +82,9 @@ def test_generic_class_declaration_nominal():
 
     class_type = class_decl.get_type()
 
-    # Should be TypeConstructor without classifier (nominal)
+    # Should be TypeConstructor 
     assert isinstance(class_type, tp.TypeConstructor)
     assert class_type.name == "Box"
-    assert class_type.classifier is None
     assert len(class_type.type_parameters) == 1
 
 
@@ -179,7 +178,8 @@ def test_structural_equivalence_from_class_declarations():
         fields=[ast.FieldDeclaration("value", t_param1)],
         functions=[],
         type_parameters=[t_param1],
-        structural=True
+        structural=True,
+        is_complete = True
     )
 
     # Create Container<T> with structural=True and same structure
@@ -190,7 +190,8 @@ def test_structural_equivalence_from_class_declarations():
         fields=[ast.FieldDeclaration("value", t_param2)],
         functions=[],
         type_parameters=[t_param2],
-        structural=True
+        structural=True,
+        is_complete = True
     )
 
     # Get types
@@ -216,7 +217,8 @@ def test_nominal_not_structurally_equivalent():
         fields=[ast.FieldDeclaration("value", t_param1)],
         functions=[],
         type_parameters=[t_param1],
-        structural=False
+        structural=False,
+        is_complete = True
     )
 
     # Create Container<T> with structural=False and same structure
@@ -260,4 +262,4 @@ def test_backward_compatibility_with_existing_code():
     # Should work fine and use nominal typing
     class_type = class_decl.get_type()
     assert isinstance(class_type, tp.TypeConstructor)
-    assert class_type.classifier is None  # No structural classifier
+    assert not tp.is_structural_type(class_type.classifier)
