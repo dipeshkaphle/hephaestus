@@ -3138,29 +3138,105 @@ class Generator():
         for attr in attrs:
             attr_type = attr.get_type()
             substituted_type = tp.substitute_type(attr_type, params_map)
-            attr_details.append({
+
+            detail = {
                 'name': attr.name if hasattr(attr, 'name') else str(attr),
                 'original_type': str(attr_type),
                 'substituted_type': str(substituted_type),
                 'is_compatible': self._is_sigtype_compatible(attr, etype, params_map, signature, False)
-            })
+            }
 
-        error_msg = (
-            f"_gen_matching_class failed to find compatible attribute!\n"
-            f"  Class name: {cls.name}\n"
-            f"  Class is_interface: {cls.is_interface()}\n"
-            f"  Class is_parameterized: {cls.is_parameterized()}\n"
-            f"  Class type_parameters: {[tp.name for tp in cls.type_parameters]}\n"
-            f"  Requested attr_name: {attr_name}\n"
-            f"  Number of {attr_name}: {len(attrs)}\n"
-            f"  Expected etype: {etype}\n"
-            f"  Expected etype type: {type(etype).__name__}\n"
-            f"  params_map: {params_map}\n"
-            f"  type_var_map (reversed): {type_var_map}\n"
-            f"  etype2 (substituted): {etype2}\n"
-            f"  can_wildcard: {can_wildcard}\n"
-            f"  Attribute details: {attr_details}\n"
-        )
+            # Add object identity debugging for ParameterizedTypes
+            if isinstance(substituted_type, tp.ParameterizedType) and isinstance(etype, tp.ParameterizedType):
+                detail['substituted_name'] = substituted_type.name
+                detail['expected_name'] = etype.name
+                detail['names_equal'] = substituted_type.name == etype.name
+
+                # Compare type arguments
+                if substituted_type.type_args and etype.type_args:
+                    detail['num_substituted_args'] = len(substituted_type.type_args)
+                    detail['num_expected_args'] = len(etype.type_args)
+
+                    type_arg_comparisons = []
+                    for i, (sub_arg, exp_arg) in enumerate(zip(substituted_type.type_args, etype.type_args)):
+                        comparison = {
+                            'index': i,
+                            'sub_arg_str': str(sub_arg),
+                            'exp_arg_str': str(exp_arg),
+                            'sub_arg_type': type(sub_arg).__name__,
+                            'exp_arg_type': type(exp_arg).__name__,
+                            'sub_arg_id': id(sub_arg),
+                            'exp_arg_id': id(exp_arg),
+                            'are_same_object': sub_arg is exp_arg,
+                            'are_equal': sub_arg == exp_arg,
+                        }
+
+                        # If both are TypeParameters, compare their properties
+                        if isinstance(sub_arg, tp.TypeParameter) and isinstance(exp_arg, tp.TypeParameter):
+                            comparison['sub_name'] = sub_arg.name
+                            comparison['exp_name'] = exp_arg.name
+                            comparison['names_equal'] = sub_arg.name == exp_arg.name
+                            comparison['sub_bound'] = str(sub_arg.bound) if sub_arg.bound else None
+                            comparison['exp_bound'] = str(exp_arg.bound) if exp_arg.bound else None
+                            comparison['sub_bound_id'] = id(sub_arg.bound) if sub_arg.bound else None
+                            comparison['exp_bound_id'] = id(exp_arg.bound) if exp_arg.bound else None
+                            comparison['bounds_same_object'] = sub_arg.bound is exp_arg.bound if (sub_arg.bound and exp_arg.bound) else None
+                            comparison['bounds_equal'] = sub_arg.bound == exp_arg.bound if (sub_arg.bound and exp_arg.bound) else None
+                            comparison['sub_variance'] = str(sub_arg.variance)
+                            comparison['exp_variance'] = str(exp_arg.variance)
+
+                        type_arg_comparisons.append(comparison)
+
+                    detail['type_arg_comparisons'] = type_arg_comparisons
+
+            attr_details.append(detail)
+
+        error_msg_parts = [
+            "_gen_matching_class failed to find compatible attribute!",
+            f"  Class name: {cls.name}",
+            f"  Class is_interface: {cls.is_interface()}",
+            f"  Class is_parameterized: {cls.is_parameterized()}",
+            f"  Class type_parameters: {[tp.name for tp in cls.type_parameters]}",
+            f"  Requested attr_name: {attr_name}",
+            f"  Number of {attr_name}: {len(attrs)}",
+            f"  Expected etype: {etype}",
+            f"  Expected etype type: {type(etype).__name__}",
+            f"  params_map: {params_map}",
+            f"  type_var_map (reversed): {type_var_map}",
+            f"  etype2 (substituted): {etype2}",
+            f"  can_wildcard: {can_wildcard}",
+            "",
+            "Attribute details:",
+        ]
+
+        for i, detail in enumerate(attr_details):
+            error_msg_parts.append(f"\n  Attribute {i + 1}: {detail['name']}")
+            error_msg_parts.append(f"    Original type: {detail['original_type']}")
+            error_msg_parts.append(f"    Substituted type: {detail['substituted_type']}")
+            error_msg_parts.append(f"    Is compatible: {detail['is_compatible']}")
+
+            if 'type_arg_comparisons' in detail:
+                error_msg_parts.append(f"    Names equal: {detail.get('names_equal', 'N/A')}")
+                error_msg_parts.append(f"    Num substituted args: {detail.get('num_substituted_args', 0)}")
+                error_msg_parts.append(f"    Num expected args: {detail.get('num_expected_args', 0)}")
+                error_msg_parts.append("    Type argument comparisons:")
+
+                for comp in detail['type_arg_comparisons']:
+                    error_msg_parts.append(f"\n      Arg {comp['index']}:")
+                    error_msg_parts.append(f"        Substituted: {comp['sub_arg_str']} (type: {comp['sub_arg_type']}, id: {comp['sub_arg_id']})")
+                    error_msg_parts.append(f"        Expected:    {comp['exp_arg_str']} (type: {comp['exp_arg_type']}, id: {comp['exp_arg_id']})")
+                    error_msg_parts.append(f"        Same object: {comp['are_same_object']}")
+                    error_msg_parts.append(f"        Are equal: {comp['are_equal']}")
+
+                    if 'sub_name' in comp:
+                        error_msg_parts.append(f"        Sub name: {comp['sub_name']}, Exp name: {comp['exp_name']}, Names equal: {comp['names_equal']}")
+                        error_msg_parts.append(f"        Sub bound: {comp['sub_bound']} (id: {comp['sub_bound_id']})")
+                        error_msg_parts.append(f"        Exp bound: {comp['exp_bound']} (id: {comp['exp_bound_id']})")
+                        error_msg_parts.append(f"        Bounds same object: {comp['bounds_same_object']}")
+                        error_msg_parts.append(f"        Bounds equal: {comp['bounds_equal']}")
+                        error_msg_parts.append(f"        Sub variance: {comp['sub_variance']}, Exp variance: {comp['exp_variance']}")
+
+        error_msg = "\n".join(error_msg_parts)
         raise RuntimeError(error_msg)
 
     # Where
