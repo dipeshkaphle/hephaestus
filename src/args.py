@@ -129,6 +129,17 @@ parser.add_argument(
     help="Use only correctness-preserving transformations"
 )
 parser.add_argument(
+    "--trace",
+    action="store_true",
+    help="Enable debug tracing of generator execution"
+)
+parser.add_argument(
+    "--trace-output",
+    default=None,
+    type=str,
+    help="Output file for trace JSON (default: traces/trace_<timestamp>.json)"
+)
+parser.add_argument(
     "--timeout",
     type=int,
     default=600,

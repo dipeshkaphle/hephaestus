@@ -89,6 +89,49 @@ def dump_program(path, program):
         pickle.dump(program, out)
 
 
+def dump_program_with_trace(program_path, trace_path, program):
+    """
+    Save program and its debug trace separately.
+
+    Args:
+        program_path: Path to save pickled program
+        trace_path: Path to save JSON trace
+        program: The Program object with context.debug_tracer
+    """
+    # Save program as pickle
+    dump_program(program_path, program)
+
+    # Save trace as JSON if tracing was enabled
+    if hasattr(program.context, 'debug_tracer') and program.context.debug_tracer.enabled:
+        program.context.debug_tracer.to_json(trace_path)
+
+
+def load_program_with_trace(program_path, trace_path):
+    """
+    Load program and its debug trace.
+
+    Args:
+        program_path: Path to pickled program
+        trace_path: Path to JSON trace
+
+    Returns:
+        tuple: (program, debug_tracer) or (program, None) if no trace
+    """
+    from src.ir.debug_tracer import DebugTracer
+
+    program = load_program(program_path)
+
+    # Try to load trace if it exists
+    tracer = None
+    if os.path.exists(trace_path):
+        try:
+            tracer = DebugTracer.from_json(trace_path)
+        except Exception as e:
+            print(f"Warning: Could not load trace from {trace_path}: {e}")
+
+    return program, tracer
+
+
 def save_text(path, text):
     with open(path, 'w') as out:
         out.write(text)

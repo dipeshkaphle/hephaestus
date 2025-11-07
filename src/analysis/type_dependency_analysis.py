@@ -3,7 +3,7 @@ from collections import defaultdict
 from typing import NamedTuple, Union, Dict, List
 
 from src import utils, graph_utils as gu
-from src.ir import ast, types as tp, type_utils as tu
+from src.ir import ast, types as tp, type_utils as tu, typescript_types as tst
 from src.ir.context import get_decl
 from src.ir.visitors import DefaultVisitor
 from src.transformations.base import change_namespace
@@ -246,6 +246,76 @@ def _is_recursive_call(func_name, func_body):
     return False
 
 
+def _build_subclass_map(context):
+    """
+    Build a map from class name to set of subclass names.
+    This is O(n) where n is the number of classes, and allows O(1) lookup.
+    """
+    subclass_map = defaultdict(set)
+    # Get all class declarations from all namespaces
+    all_classes_dict = context.get_classes(ast.GLOBAL_NAMESPACE, glob=True)
+
+    for class_name, class_decl in all_classes_dict.items():
+        if class_decl is None:
+            continue
+        for superclass_inst in class_decl.superclasses:
+            superclass_name = superclass_inst.class_type.name
+            subclass_map[superclass_name].add(class_name)
+
+    return subclass_map
+
+
+def _is_protected_method(func_decl, namespace, context, subclass_map):
+    """
+    Check if a method's return type should be protected from erasure.
+
+    A method is protected if:
+    1. It's in an abstract class
+    2. It's not final (can be overridden)
+    3. Its class has subclasses (is a base class)
+    4. It's an abstract method (body is None)
+    """
+    # Not a class method
+    if not func_decl.is_class_method():
+        return False
+
+    # Abstract methods should always keep their return types
+    if func_decl.body is None:
+        return True
+
+    # Check if it's in a class scope
+    # Namespace structure: ('global', 'ClassName', 'method_name')
+    # We need at least 3 elements for a class method, since @change_namespace
+    # adds the function name. We can't have nested function declarations
+    # (no functions inside function bodies in our IR), so length 3 means
+    # it's a class method.
+    if len(namespace) < 3:
+        return False
+
+    class_name = namespace[-2]  # Parent scope is the class
+    # Look up the class in the parent namespace
+    parent_namespace = namespace[:-1]
+    class_decl = context.get_decl(parent_namespace[:-1], class_name)
+
+    if class_decl is None or not isinstance(class_decl, ast.ClassDeclaration):
+        return False
+
+    # Protect methods in abstract classes or interfaces
+    if class_decl.class_type in (ast.ClassDeclaration.ABSTRACT,
+                                  ast.ClassDeclaration.INTERFACE):
+        return True
+
+    # Protect non-final methods (can be overridden)
+    if not func_decl.is_final:
+        return True
+
+    # Protect methods in classes that have subclasses (O(1) lookup)
+    if class_name in subclass_map and subclass_map[class_name]:
+        return True
+
+    return False
+
+
 class TypeDependencyAnalysis(DefaultVisitor):
     def __init__(self, program, namespace=None, type_graph=None):
         self._bt_factory = program.bt_factory
@@ -270,6 +340,8 @@ class TypeDependencyAnalysis(DefaultVisitor):
         self._stream = iter(range(0, 10000))
         self._func_non_void_block_type = None
         self._id_gen = utils.IdGen()
+        # Build subclass map once for efficient lookup
+        self._subclass_map = _build_subclass_map(self._context)
 
     def result(self):
         return self.type_graph
@@ -379,6 +451,12 @@ class TypeDependencyAnalysis(DefaultVisitor):
                                decl_site_type_var, Edge.INFERRED)
         return main_node
 
+    def get_visitors(self):
+        visitors = super().get_visitors()
+        # Language specific node visitors
+        visitors[tst.StringLiteralType] = self._visit_string_literal
+        return visitors
+
     def visit_integer_constant(self, node):
         node_id, _ = self._get_node_id()
         self._inferred_nodes[node_id].append(TypeNode(node.integer_type, None))
@@ -386,6 +464,14 @@ class TypeDependencyAnalysis(DefaultVisitor):
     def visit_real_constant(self, node):
         node_id, _ = self._get_node_id()
         self._inferred_nodes[node_id].append(TypeNode(node.real_type, None))
+
+    def _visit_string_literal(self, node):
+        node_id, _ = self._get_node_id()
+
+        # Typescript has this
+        str_literal_type = tst.StringLiteralType(node.literal)
+        self._inferred_nodes[node_id].append(TypeNode(str_literal_type, None))
+
 
     def visit_string_constant(self, node):
         node_id, _ = self._get_node_id()
@@ -464,6 +550,10 @@ class TypeDependencyAnalysis(DefaultVisitor):
         )
 
     def _get_receiver_type(self, receiver_t):
+        # Handle None receiver types (e.g., unbounded type variables)
+        if receiver_t is None:
+            return None, {}
+
         # If the receiver type is parameterized, compute type variable
         # assignments.
         if receiver_t.is_parameterized():
@@ -492,6 +582,9 @@ class TypeDependencyAnalysis(DefaultVisitor):
         if receiver_t is None:
             return
         receiver_t, type_var_map = self._get_receiver_type(receiver_t)
+        # _get_receiver_type can return None for unbounded type variables
+        if receiver_t is None:
+            return
         f = tu.get_decl_from_inheritance(receiver_t, node.name, self._context)
         assert f is not None, (
             "Field " + node.name + " was not found in class " +
@@ -648,10 +741,15 @@ class TypeDependencyAnalysis(DefaultVisitor):
             if node.get_type() == self._bt_factory.get_void_type()
             else node.get_type()
         )
+        # Check if this method's return type should be protected from erasure
+        is_protected = _is_protected_method(node, self._namespace,
+                                            self._context, self._subclass_map)
+
         if isinstance(node.body, ast.Block) or _is_recursive_call(
-                node.name, node.body):
-            # If the corresponding function contains a block or makes a
-            # recursive call, its type is not omittable.
+                node.name, node.body) or is_protected:
+            # If the corresponding function contains a block, makes a
+            # recursive call, or is a protected method (abstract/base class),
+            # its type is not omittable.
             self.visit(node.body)
         else:
             # We create a "virtual" variable declaration representing the
@@ -797,6 +895,9 @@ class TypeDependencyAnalysis(DefaultVisitor):
                 return
 
             receiver_t, _ = self._get_receiver_type(receiver_t)
+            # _get_receiver_type can return None for unbounded type variables
+            if receiver_t is None:
+                return
             fun_decl = tu.get_decl_from_inheritance(receiver_t,
                                                     node.func, self._context)
             if fun_decl is None:
@@ -991,12 +1092,15 @@ class TypeDependencyAnalysis(DefaultVisitor):
             # In this case, we connect T2 -> T1 (i.e., meaning that the
             # compiler can infer the type argument of T2, if it knows the
             # type argument of T1).
-            if t_param.bound and t_param.bound.has_type_variables():
+            if t_param.bound and hasattr(t_param.bound, 'has_type_variables') \
+                    and t_param.bound.has_type_variables():
                 if t_param.bound.is_type_var():
                     type_vars = [t_param.bound]
-                else:
+                elif hasattr(t_param.bound, 'get_type_variables'):
                     type_vars = t_param.bound.get_type_variables(
                         self._bt_factory)
+                else:
+                    type_vars = []
                 if t_param.bound.is_parameterized():
                     construct_edge(self.type_graph, source,
                                    TypeNode(t_param.bound, None),

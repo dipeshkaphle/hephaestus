@@ -13,6 +13,21 @@ update_and_install_common_pks() {
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.9 1
 }
 
+install_uv() {
+    # Install uv - modern Python package manager
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    # Add uv to PATH for current session
+    export PATH="$HOME/.cargo/bin:$PATH"
+    echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> $HOME/.bash_profile
+}
+
+setup_hephaestus_python_env() {
+    # Initialize uv project and install dependencies
+    cd $CHECK_TYPE_SYSTEMS
+    uv sync --all-extras
+    cd -
+}
+
 install_sdkman() {
     apt -yqq install $SDKMAN_DEPS
     curl -s https://get.sdkman.io | /bin/bash
@@ -163,6 +178,10 @@ install_check_type_systems() {
     git pull
     echo "CHECK_TYPE_SYSTEMS=$(pwd)" >> $HOME/.bash_profile
     cd ..
+    # Install uv and set up Python environment
+    install_uv
+    source $HOME/.bash_profile
+    setup_hephaestus_python_env
 }
 
 add_run_script_to_path() {

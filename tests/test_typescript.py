@@ -256,3 +256,35 @@ def test_union_to_type_variable_free():
     union = tst.UnionType([tst.NumberType(), type_param])
     new_union = union.to_type_variable_free(tst.TypeScriptBuiltinFactory())
     assert new_union == tst.UnionType([tst.NumberType(), tst.StringType()])
+
+
+def test_union_subtyping_number_bigint_incompatibility():
+    """
+    Test based on TypeScript error:
+    Type '(p0: number | "lorry", p1: undefined) => number | "lorry"'
+    is not assignable to type '(p0: bigint | "lorry", p1: undefined) => bigint | "lorry"'.
+
+    Verifies that (number | "lorry") is NOT a subtype of (bigint | "lorry")
+    because number and bigint are distinct, unrelated types.
+    """
+    # Create the union types
+    number_or_lorry = tst.UnionType([tst.NumberType(), tst.StringLiteralType("lorry")])
+    bigint_or_lorry = tst.UnionType([tst.BigIntegerType(), tst.StringLiteralType("lorry")])
+
+    # Verify that number | "lorry" is NOT a subtype of bigint | "lorry"
+    assert not number_or_lorry.is_subtype(bigint_or_lorry)
+
+    # Also verify the reverse is false
+    assert not bigint_or_lorry.is_subtype(number_or_lorry)
+
+    # Verify the root cause: number and bigint are unrelated
+    assert not tst.NumberType().is_subtype(tst.BigIntegerType())
+    assert not tst.BigIntegerType().is_subtype(tst.NumberType())
+
+    # But verify that "lorry" alone IS a subtype of both unions
+    lorry_literal = tst.StringLiteralType("lorry")
+    assert lorry_literal.is_subtype(bigint_or_lorry)
+    assert lorry_literal.is_subtype(number_or_lorry)
+
+    # And number alone is NOT a subtype of bigint | "lorry"
+    assert not tst.NumberType().is_subtype(bigint_or_lorry)

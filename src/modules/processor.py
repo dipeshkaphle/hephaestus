@@ -91,11 +91,20 @@ class ProgramProcessor():
                             self.proc_id)
         else:
             logger = None
+
+        # Create context with debug tracer if tracing is enabled
+        context = None
+        if self.args.trace:
+            from src.ir.context import Context
+            from src.ir.debug_tracer import DebugTracer
+            context = Context()
+            context.debug_tracer = DebugTracer(enabled=True, capture_stack=False)
+
         generator = Generator(
             language=self.args.language,
             logger=logger,
             options=self.args.options["Generator"])
-        program = generator.generate()
+        program = generator.generate(context=context)
         return program, True
 
     def can_transform(self):
