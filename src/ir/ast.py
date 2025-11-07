@@ -104,6 +104,12 @@ class Program(Node):
             ClassDeclaration: self.context.add_class,
             VariableDeclaration: self.context.add_var,
         }
+        # Add language-specific declaration types (e.g., TypeAliasDeclaration for TypeScript)
+        # Factory handlers expect (gen, namespace, name, decl) where gen is an object with .context
+        # Program also has .context, so we can pass self
+        for decl_class, factory_handler in self.bt_factory.update_add_node_to_parent().items():
+            decl_types[decl_class] = lambda ns, name, d, handler=factory_handler: handler(self, ns, name, d)
+
         decl_types[decl.__class__](GLOBAL_NAMESPACE, decl.name, decl)
         if isinstance(decl, ClassDeclaration):
             self._add_class(GLOBAL_NAMESPACE, decl)
@@ -501,7 +507,7 @@ class Lambda(Expr):
         self.body = children[-1]
 
     def get_type(self):
-        return self.ret_type
+        return self.signature
 
     def get_signature(self, function_type: FunctionType):
         type_args = [p.param_type for p in self.params] + [self.ret_type]
@@ -538,7 +544,8 @@ class ClassDeclaration(Declaration):
                  fields: List[FieldDeclaration] = [],
                  functions: List[FunctionDeclaration] = [],
                  is_final=True,
-                 type_parameters: List[types.TypeParameter] = []):
+                 type_parameters: List[types.TypeParameter] = [],
+                 structural: bool = False, is_complete: bool = True):
         self.name = name
         self.superclasses = superclasses
         self.class_type = class_type or self.REGULAR
@@ -546,6 +553,8 @@ class ClassDeclaration(Declaration):
         self.functions = functions
         self.is_final = is_final
         self.type_parameters = type_parameters
+        self.structural = structural
+        self.is_complete = is_complete
         self.supertypes = [s.class_type for s in self.superclasses]
 
     @property
@@ -584,11 +593,50 @@ class ClassDeclaration(Declaration):
 
     def get_type(self):
         if self.type_parameters:
-            return types.TypeConstructor(
-                self.name, self.type_parameters,
-                self.supertypes)
-        return types.SimpleClassifier(
-            self.name, self.supertypes)
+            if self.structural:
+                # Structural typing: create SimpleClassifier with field/method signatures
+                classifier = types.SimpleClassifier(
+                    name=self.name,
+                    supertypes=self.supertypes,
+                    field_signatures=self.get_field_signatures(),
+                    method_signatures=self.get_method_signatures(),
+                    structural=True,
+                    is_complete=self.is_complete
+                )
+                return types.TypeConstructor(
+                    self.name,
+                    self.type_parameters,
+                    classifier=classifier
+                )
+            else:
+                # Nominal typing (default, backward compatible)
+                classifier = types.SimpleClassifier(
+                    self.name, self.supertypes, is_complete=self.is_complete)
+                return types.TypeConstructor(
+                    self.name,
+                    self.type_parameters,
+                    supertypes=self.supertypes,
+                    classifier=classifier
+                )
+
+        # Non-generic classes
+        if self.structural:
+            # Structural typing
+            return types.SimpleClassifier(
+                name=self.name,
+                supertypes=self.supertypes,
+                field_signatures=self.get_field_signatures(),
+                method_signatures=self.get_method_signatures(),
+                structural=True,
+                is_complete=self.is_complete
+            )
+        else:
+            # Nominal typing (default, backward compatible)
+            return types.SimpleClassifier(
+                self.name,
+                self.supertypes,
+                is_complete=self.is_complete
+            )
 
     def get_class_prefix(self):
         if self.class_type == self.REGULAR:
@@ -716,6 +764,32 @@ class ClassDeclaration(Declaration):
         attributes = self.get_callable_functions(class_decls)
         attributes.update(self.get_all_fields(class_decls))
         return attributes
+
+    def get_field_signatures(self):
+        """
+        Get field signatures for structural type checking.
+
+        Returns a list of FieldInfo objects representing
+        the structural signature of this class's fields.
+        """
+        from src.ir.types import FieldInfo
+        return [FieldInfo(f.name, f.field_type) for f in self.fields]
+
+    def get_method_signatures(self):
+        """
+        Get method signatures for structural type checking.
+
+        Returns a list of MethodInfo objects representing
+        the structural signature of this class's methods.
+        """
+        from src.ir.types import MethodInfo
+        signatures = []
+        for func in self.functions:
+            method_name = func.name
+            param_types = [p.param_type for p in func.params]
+            return_type = func.ret_type
+            signatures.append(MethodInfo(method_name, param_types, return_type))
+        return signatures
 
     def get_abstract_functions(self, class_decls) -> List[FunctionDeclaration]:
         # Get the abstract functions that are declared in the current class.

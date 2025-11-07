@@ -1048,3 +1048,92 @@ def test_program29():
     assert tda.is_combination_feasible(
         tg, (type_inst_node1, type_inst_node2)
     )
+
+
+def test_abstract_class_method_protection():
+    """
+    Test that methods in abstract classes with simple expression bodies
+    are protected from return type erasure.
+
+    This is a regression test for bug dgVqs/17 where Endures::dalliance
+    in an abstract class had its return type incorrectly erased.
+    """
+    # Create abstract base class with method that has simple body
+    context = ctx.Context()
+    bt_factory = kt.KotlinBuiltinFactory()
+
+    number_type = bt_factory.get_number_type()
+    string_type = bt_factory.get_string_type()
+
+    # Abstract class with a method returning number (simple expression body)
+    base_class = ast.ClassDeclaration(
+        name='BaseClass',
+        superclasses=[],
+        class_type=ast.ClassDeclaration.ABSTRACT,  # Abstract class
+        fields=[],
+        functions=[],
+        is_final=False
+    )
+
+    # Method with simple expression body (not a Block)
+    method = ast.FunctionDeclaration(
+        name='getValue',
+        params=[],
+        ret_type=number_type,
+        body=ast.IntegerConstant(42, number_type),  # Simple expression
+        func_type=ast.FunctionDeclaration.CLASS_METHOD,
+        is_final=False  # Can be overridden
+    )
+    base_class.functions.append(method)
+
+    # Create subclass that overrides the method
+    sub_class = ast.ClassDeclaration(
+        name='SubClass',
+        superclasses=[
+            ast.SuperClassInstantiation(
+                tp.SimpleClassifier('BaseClass', []),
+                []
+            )
+        ],
+        class_type=ast.ClassDeclaration.REGULAR,
+        fields=[],
+        functions=[],
+        is_final=False
+    )
+
+    # Build context
+    context.add_class(ast.GLOBAL_NAMESPACE, 'BaseClass', base_class)
+    context.add_class(ast.GLOBAL_NAMESPACE, 'SubClass', sub_class)
+    context.add_type(ast.GLOBAL_NAMESPACE, 'BaseClass',
+                     tp.SimpleClassifier('BaseClass', []))
+    context.add_type(ast.GLOBAL_NAMESPACE, 'SubClass',
+                     tp.SimpleClassifier('SubClass',
+                                        [tp.SimpleClassifier('BaseClass', [])]))
+
+    # Create program
+    program = ast.Program(context, "kotlin", bt_factory)
+
+    # Run analysis
+    analysis = tda.TypeDependencyAnalysis(program)
+    analysis.visit(program)
+
+    # Check that the method is protected
+    namespace = ('global', 'BaseClass', 'getValue')
+    is_protected = tda._is_protected_method(
+        method, namespace, context, analysis._subclass_map
+    )
+
+    # The method should be protected because:
+    # 1. It's in an abstract class
+    # 2. BaseClass has a subclass (SubClass)
+    # 3. The method is not final
+    assert is_protected, (
+        "Method in abstract class with subclasses should be protected "
+        "from return type erasure"
+    )
+
+    # Verify subclass map was built correctly
+    assert 'BaseClass' in analysis._subclass_map, "Subclass map should contain BaseClass"
+    assert 'SubClass' in analysis._subclass_map['BaseClass'], (
+        "SubClass should be in BaseClass's subclass set"
+    )

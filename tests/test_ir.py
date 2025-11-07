@@ -337,3 +337,70 @@ def test_get_fields_parameterized():
     assert_declarations(cls2.get_all_fields([cls1, cls2, cls3]),
                         [exp_field, field3])
 
+
+def test_get_field_signatures():
+    """Test ClassDeclaration.get_field_signatures()"""
+    from src.ir.types import FieldInfo
+
+    field1 = FieldDeclaration("x", Integer)
+    field2 = FieldDeclaration("y", String)
+    field3 = FieldDeclaration("z", Boolean)
+
+    cls = ClassDeclaration("TestClass", [],
+                          fields=[field1, field2, field3])
+
+    sigs = cls.get_field_signatures()
+
+    assert len(sigs) == 3
+    assert FieldInfo("x", Integer) in sigs
+    assert FieldInfo("y", String) in sigs
+    assert FieldInfo("z", Boolean) in sigs
+
+
+def test_get_method_signatures():
+    """Test ClassDeclaration.get_method_signatures()"""
+    from src.ir.types import MethodInfo
+
+    param1 = ParameterDeclaration("n", Integer)
+    param2 = ParameterDeclaration("s", String)
+
+    func1 = FunctionDeclaration(
+        "foo",
+        [param1],
+        String,
+        None,
+        FunctionDeclaration.CLASS_METHOD
+    )
+
+    func2 = FunctionDeclaration(
+        "bar",
+        [param1, param2],
+        Boolean,
+        None,
+        FunctionDeclaration.CLASS_METHOD
+    )
+
+    func3 = FunctionDeclaration(
+        "baz",
+        [],
+        Integer,
+        None,
+        FunctionDeclaration.CLASS_METHOD
+    )
+
+    cls = ClassDeclaration("TestClass", [],
+                          functions=[func1, func2, func3])
+
+    sigs = cls.get_method_signatures()
+
+    assert len(sigs) == 3
+
+    # Check foo signature: foo(Integer) -> String
+    assert MethodInfo("foo", [Integer], String) in sigs
+
+    # Check bar signature: bar(Integer, String) -> Boolean
+    assert MethodInfo("bar", [Integer, String], Boolean) in sigs
+
+    # Check baz signature: baz() -> Integer
+    assert MethodInfo("baz", [], Integer) in sigs
+
