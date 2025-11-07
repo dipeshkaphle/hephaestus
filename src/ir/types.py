@@ -715,7 +715,10 @@ def perform_type_substitution(etype, type_map,
     supertypes = []
     for t in etype.supertypes:
         if t.is_parameterized():
-            supertypes.append(t.substitute_type(type_map, cond=lambda t: False))
+            substituted = t.substitute_type(type_map, cond=lambda t: False)
+            # Debug: Verify substitution worked
+            # print(f"DEBUG perform_type_substitution: {t} -> {substituted} using {type_map}")
+            supertypes.append(substituted)
         else:
             supertypes.append(t)
     type_params = []
