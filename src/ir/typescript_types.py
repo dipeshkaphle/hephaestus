@@ -104,11 +104,93 @@ class TypeScriptBuiltinFactory(bt.BuiltinFactory):
         return {
             ts_ast.TypeAliasDeclaration: add_type_alias,
         }
+    
+    def get_indexed_access_type(self, object_type, index_type):
+        """Create an indexed access type T[K]
+
+        Args:
+            object_type: The type being indexed
+            index_type: The index type (usually string literal or number)
+
+        Returns:
+            An IndexedAccessType instance
+        """
+        return IndexedAccessType(object_type, index_type)
+
+    def _can_generate_indexed_access(self, gen_object):
+        """Check if we can generate an indexed access type
+
+        We need at least one class/interface with fields to index
+        """
+        try:
+            classes = list(gen_object.context.get_classes(gen_object.namespace).values())
+            return any(hasattr(c, 'fields') and len(c.fields) > 0 for c in classes)
+        except:
+            return False
+
+    def _generate_indexed_access_type(self, gen_object):
+        """Generate an indexed access type T[K]
+
+        Returns:
+            An IndexedAccessType instance or None if generation fails
+        """
+        try:
+            # Get classes with fields
+            classes = list(gen_object.context.get_classes(gen_object.namespace).values())
+            indexable_classes = [c for c in classes
+                                if hasattr(c, 'fields') and len(c.fields) > 0]
+
+            if not indexable_classes:
+                return None
+
+            # Select a random class
+            target_class = ut.random.choice(indexable_classes)
+            object_type = target_class.get_type()
+
+            # If the class is generic (has type parameters), we need to instantiate it first
+            # because TypeScript requires: GenericClass<Type>["field"], not GenericClass["field"]
+            if object_type.is_type_constructor():
+                # Import here to avoid circular dependency
+                from src.ir import type_utils as tu
+                # Get available types for instantiation
+                available_types = gen_object.get_types(exclude_arrays=True, exclude_covariants=True)
+                # Instantiate the type constructor with random types
+                object_type, _ = tu.instantiate_type_constructor(
+                    object_type, available_types, gen_object.bt_factory
+                )
+
+            # Select a random field name as index
+            field = ut.random.choice(target_class.fields)
+            index_type = StringLiteralType(field.name)
+
+            # Cache the resolved type (the field's type) for accurate type checking
+            # If object_type is parameterized, we need to substitute type variables in field type
+            resolved_type = field.field_type
+            if object_type.is_parameterized():
+                type_var_map = object_type.get_type_variable_assignments()
+                resolved_type = tp.substitute_type(resolved_type, type_var_map)
+
+            return IndexedAccessType(object_type, index_type, resolved_type=resolved_type)
+        except:
+            return None
 
     def get_compound_types(self, gen_object):
-        return [
-            self._union_type_factory.get_union_type(gen_object),
-        ]
+        types = []
+
+        # Add union type
+        union_type = self._union_type_factory.get_union_type(gen_object)
+        if union_type:
+            types.append(union_type)
+
+        # Try to generate IndexedAccessType with 30% probability
+        if self._can_generate_indexed_access(gen_object):
+            indexed_type = self._generate_indexed_access_type(gen_object)
+            if indexed_type:
+                types.append(indexed_type)
+
+        # Filter out any None values that might have slipped through
+        return [t for t in types if t is not None]
+
 
     def get_constant_candidates(self, constants):
         """ Updates the constant candidates of the generator
@@ -725,6 +807,166 @@ class UnionType(TypeScriptBuiltin):
 
     def __hash__(self):
         return hash(str(self.name) + str(self.types))
+
+class IndexedAccessType(TypeScriptBuiltin):
+    """Represents TypeScript's indexed access type T[K]
+
+    Examples:
+        Person["name"]  -> string
+        T[K]            -> depends on T and K
+        Array<T>[number] -> T
+    """
+    def __init__(self, object_type: tp.Type, index_type: tp.Type,
+                 name="IndexedAccessType", primitive=False, resolved_type=None):
+        super().__init__(name, primitive)
+        self.object_type = object_type  # The type being indexed
+        self.index_type = index_type    # The index type (usually string literal or number)
+        self._resolved_type = resolved_type  # Cache the resolved type if known
+
+    def is_compound(self):
+        return True
+
+    def has_type_variables(self):
+        return (self.object_type.has_type_variables() or
+                self.index_type.has_type_variables())
+
+    @two_way_subtyping
+    def is_subtype(self, other: tp.Type):
+        """
+        Subtype checking for indexed access types requires resolving the actual type.
+        For example: Person["name"] is a subtype of string
+        """
+        # Try to resolve the indexed access type
+        resolved = self._try_resolve()
+        if resolved:
+            return resolved.is_subtype(other)
+
+        # If unable to resolve, use conservative strategy
+        # Assume indexed access type may return Object
+        return isinstance(other, ObjectType)
+
+    def _try_resolve(self):
+        """Try to resolve T[K] to a concrete type
+
+        Attempts to statically resolve the indexed access type to its actual type.
+        For example:
+        - Person["name"] -> string (if Person has a name field of type string)
+        - Array<number>[number] -> number
+
+        Returns:
+            The resolved type if successful, None otherwise
+        """
+        # If we cached the resolved type during generation, use it
+        if self._resolved_type is not None:
+            return self._resolved_type
+
+        # Case 1: Array<T>[number] -> T
+        # When indexing an array with a number, return the element type
+        if (self.object_type.is_parameterized() and
+            self.object_type.t_constructor.name == "Array"):
+            # Check if index_type is number or a number literal
+            if isinstance(self.index_type, (NumberType, NumberLiteralType)):
+                # Return the element type (first type argument of Array<T>)
+                return self.object_type.type_args[0]
+
+        # Case 2: For class/interface types with string literal index
+        # We cannot fully resolve this without context (class definitions)
+        # This would require passing context into this method or caching
+        # field type information in the IndexedAccessType itself
+        # For now, we return None and rely on conservative subtyping
+
+        return None
+
+    def substitute_type(self, type_map, cond=lambda t: t.has_type_variables()):
+        """Substitute both object type and index type during type substitution"""
+        new_object = self.object_type.substitute_type(type_map, cond)
+        new_index = self.index_type.substitute_type(type_map, cond)
+        # Also substitute the resolved type if it exists
+        new_resolved = None
+        if self._resolved_type is not None:
+            new_resolved = self._resolved_type.substitute_type(type_map, cond)
+        return IndexedAccessType(new_object, new_index, resolved_type=new_resolved)
+
+    def get_type_variables(self, factory):
+        """Collect type variables from both object and index types"""
+        type_vars = defaultdict(set)
+
+        if self.object_type.is_type_var():
+            type_vars[self.object_type].add(
+                self.object_type.get_bound_rec(factory))
+        elif self.object_type.is_compound() or self.object_type.is_wildcard():
+            for k, v in self.object_type.get_type_variables(factory).items():
+                type_vars[k].update(v)
+
+        if self.index_type.is_type_var():
+            type_vars[self.index_type].add(
+                self.index_type.get_bound_rec(factory))
+        elif self.index_type.is_compound() or self.index_type.is_wildcard():
+            for k, v in self.index_type.get_type_variables(factory).items():
+                type_vars[k].update(v)
+
+        return type_vars
+
+    def to_type_variable_free(self, factory):
+        """Convert to a type without type variables"""
+        new_object = (self.object_type.to_type_variable_free(factory)
+                      if self.object_type.has_type_variables()
+                      else self.object_type)
+        new_index = (self.index_type.to_type_variable_free(factory)
+                     if self.index_type.has_type_variables()
+                     else self.index_type)
+        new_resolved = None
+        if self._resolved_type is not None:
+            new_resolved = (self._resolved_type.to_type_variable_free(factory)
+                           if self._resolved_type.has_type_variables()
+                           else self._resolved_type)
+        return IndexedAccessType(new_object, new_index, resolved_type=new_resolved)
+
+    def get_type_variable_assignments(self):
+        """
+        Get type variable assignments for IndexedAccessType.
+
+        IndexedAccessType is not itself a parameterized type, but if it resolves
+        to a parameterized type, we can delegate to that type.
+        Otherwise, return an empty dictionary.
+        """
+        resolved = self._try_resolve()
+        if resolved and hasattr(resolved, 'get_type_variable_assignments'):
+            return resolved.get_type_variable_assignments()
+        return {}
+
+    def unify_types(self, t1, factory, same_type=True):
+        """
+        Unify types for IndexedAccessType.
+
+        Since IndexedAccessType is a computed type (T[K] resolves to some type),
+        we use a conservative approach: return empty dict (no unification)
+        unless we can resolve the indexed access type.
+        """
+        # Try to resolve the indexed access to a concrete type
+        resolved = self._try_resolve()
+        if resolved:
+            # Delegate to the resolved type
+            from src.ir import type_utils as tu
+            return tu.unify_types(t1, resolved, factory, same_type)
+
+        # Cannot resolve, no unification possible
+        return {}
+
+    def get_name(self):
+        return f"{self.object_type.get_name()}[{self.index_type.get_name()}]"
+
+    def __str__(self):
+        return f"IndexedAccessType({self.object_type}[{self.index_type}])"
+
+    def __eq__(self, other):
+        return (self.__class__ == other.__class__ and
+                self.object_type == other.object_type and
+                self.index_type == other.index_type and
+                self._resolved_type == getattr(other, '_resolved_type', None))
+
+    def __hash__(self):
+        return hash(str(self.name) + str(self.object_type) + str(self.index_type))
 
 
 class UnionTypeFactory(object):

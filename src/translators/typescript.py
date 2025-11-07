@@ -93,6 +93,10 @@ class TypeScriptTranslator(BaseTranslator):
             return str(t.get_literal())
         if t.name == 'UnionType':
             return self.get_union(t)
+        if isinstance(t, tst.IndexedAccessType):
+            object_name = self.get_type_name(t.object_type)
+            index_name = self.get_type_name(t.index_type)
+            return f"{object_name}[{index_name}]"        
         if not t_constructor:
             return t.get_name()
 
