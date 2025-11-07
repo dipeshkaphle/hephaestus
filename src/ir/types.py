@@ -1104,7 +1104,8 @@ class ParameterizedType(SimpleClassifier):
                 self.type_args == other.type_args)
 
     def __hash__(self):
-        return hash((self.name, tuple(self.type_args)))
+        return hash(str(self.name) + str(self.supertypes) + str(self.type_args)
+                    + str(self.t_constructor.type_parameters))
 
     def __str__(self):
         return "{}<{}>".format(self.name,
