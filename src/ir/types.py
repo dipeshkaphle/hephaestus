@@ -926,12 +926,24 @@ class ParameterizedType(SimpleClassifier):
             "You should provide {} types for {}".format(
                 len(self.t_constructor.type_parameters), self.t_constructor)
         self._can_infer_type_args = can_infer_type_args
+
+        # Substitute type variables in supertypes with actual type arguments
+        type_var_map = {
+            t_param: type_args[i]
+            for i, t_param in enumerate(self.t_constructor.type_parameters)
+        }
+        substituted_supertypes = [
+            supertype.substitute_type(type_var_map, lambda t: t.has_type_variables())
+            if hasattr(supertype, 'substitute_type') else supertype
+            for supertype in self.t_constructor.supertypes
+        ]
+
         super().__init__(self.t_constructor.name,
-                         self.t_constructor.supertypes, is_complete=(is_complete(self.t_constructor.classifier)))
+                         substituted_supertypes, is_complete=(is_complete(self.t_constructor.classifier)))
         # Set structural flag based on the type constructor's classifier
         self.structural = is_structural_type(self.t_constructor)
-        # XXX revisit
-        self.supertypes = copy(self.t_constructor.supertypes)
+        # Use substituted supertypes instead of copying raw supertypes
+        self.supertypes = substituted_supertypes
 
     def is_compound(self):
         return True
