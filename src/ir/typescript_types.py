@@ -128,6 +128,15 @@ class TypeScriptBuiltinFactory(bt.BuiltinFactory):
                 continue
             if getattr(target, "has_type_variables", lambda: False)():
                 continue
+            # Avoid applying `keyof` to primitive builtins (e.g. bigint, number,
+            # string, boolean, symbol). Those are invalid or nonsensical in TS
+            # generation contexts, so skip them here.
+            prim_name = getattr(target, 'get_name', lambda: '')()
+            if (isinstance(target, (NumberType, BigIntegerType, StringType,
+                                   SymbolType, BooleanType)) or
+                    (isinstance(prim_name, str) and prim_name.lower() in
+                     {'number', 'bigint', 'string', 'symbol', 'boolean'})):
+                continue
             # Avoid null/undefined/void as keyof operands; TS treats those specially (never)
             # TODO: skip everything except typeclasses
             if isinstance(target, (NullType, UndefinedType, VoidType)):
