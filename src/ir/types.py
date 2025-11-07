@@ -799,11 +799,10 @@ class TypeConstructor(AbstractType):
     def new(self, type_args: List[Type]):
         type_map = {tp: type_args[i]
                     for i, tp in enumerate(self.type_parameters)}
+        old_supertypes = self.supertypes
         type_con = perform_type_substitution(self, type_map)
         etype = ParameterizedType(type_con, type_args)
-        # Note: Do NOT restore old_supertypes here. perform_type_substitution
-        # already substituted type variables in supertypes, and we need to keep
-        # the substituted versions.
+        etype.t_constructor.supertypes = old_supertypes
         return etype
 
 
@@ -927,13 +926,24 @@ class ParameterizedType(SimpleClassifier):
             "You should provide {} types for {}".format(
                 len(self.t_constructor.type_parameters), self.t_constructor)
         self._can_infer_type_args = can_infer_type_args
+
+        # Substitute type variables in supertypes with actual type arguments
+        type_var_map = {
+            t_param: type_args[i]
+            for i, t_param in enumerate(self.t_constructor.type_parameters)
+        }
+        substituted_supertypes = [
+            supertype.substitute_type(type_var_map, lambda t: t.has_type_variables())
+            if hasattr(supertype, 'substitute_type') else supertype
+            for supertype in self.t_constructor.supertypes
+        ]
+
         super().__init__(self.t_constructor.name,
-                         self.t_constructor.supertypes, is_complete=(is_complete(self.t_constructor.classifier)))
+                         substituted_supertypes, is_complete=(is_complete(self.t_constructor.classifier)))
         # Set structural flag based on the type constructor's classifier
         self.structural = is_structural_type(self.t_constructor)
-        # The supertypes should already be substituted by perform_type_substitution
-        # in TypeConstructor.new before this constructor is called
-        self.supertypes = copy(self.t_constructor.supertypes)
+        # Use substituted supertypes instead of copying raw supertypes
+        self.supertypes = substituted_supertypes
 
     def is_compound(self):
         return True
