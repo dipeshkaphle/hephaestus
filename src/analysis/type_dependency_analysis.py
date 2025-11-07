@@ -466,17 +466,32 @@ class TypeDependencyAnalysis(DefaultVisitor):
         self._inferred_nodes[node_id].append(TypeNode(node.real_type, None))
 
     def _visit_string_literal(self, node):
-        node_id, _ = self._get_node_id()
+        """
+        Visit a StringLiteralType TYPE object (not an AST node).
 
-        # Typescript has this
+        This is called when visiting type expressions during type dependency analysis,
+        specifically for TypeScript's StringLiteralType which represents a specific
+        string literal as a type (e.g., the type "foo" rather than the type string).
+
+        Registered in get_visitors() for tst.StringLiteralType.
+        """
+        node_id, _ = self._get_node_id()
+        # Create a TypeScript string literal type from the literal value
         str_literal_type = tst.StringLiteralType(node.literal)
         self._inferred_nodes[node_id].append(TypeNode(str_literal_type, None))
 
-
     def visit_string_constant(self, node):
+        """
+        Visit a StringConstant AST node.
+
+        This is called when visiting actual string constant expressions in the AST.
+        If the node has a stored string_type (e.g., StringLiteralType), use it.
+        Otherwise, infer the generic string type.
+        """
         node_id, _ = self._get_node_id()
-        self._inferred_nodes[node_id].append(
-            TypeNode(self._bt_factory.get_string_type(), None))
+        # Check if the constant has a stored type (e.g., StringLiteralType)
+        inferred_type = node.string_type if node.string_type else self._bt_factory.get_string_type()
+        self._inferred_nodes[node_id].append(TypeNode(inferred_type, None))
 
     def visit_boolean_constant(self, node):
         node_id, _ = self._get_node_id()

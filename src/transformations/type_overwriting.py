@@ -100,7 +100,16 @@ class TypeOverwriting(Transformation):
         else:
             node_type = n.decl.get_type()
             old_type = node_type
-        if node_type.name in ["Boolean", "String", "BigInteger"]:
+
+        # Skip transformation for base types Boolean, String, BigInteger
+        # but allow it for literal types (StringLiteralType, NumberLiteralType)
+        try:
+            from src.ir import typescript_types as tst
+            is_literal_type = isinstance(node_type, (tst.StringLiteralType, tst.NumberLiteralType))
+        except ImportError:
+            is_literal_type = False
+
+        if not is_literal_type and node_type.name in ["Boolean", "String", "BigInteger"]:
             return node
         ir_type = tu.find_irrelevant_type(node_type, self.types,
                                           self.bt_factory)

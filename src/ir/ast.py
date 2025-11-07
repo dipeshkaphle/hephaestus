@@ -989,6 +989,15 @@ class CharConstant(Constant):
 
 
 class StringConstant(Constant):
+    def __init__(self, literal: str, string_type=None):
+        super().__init__(literal)
+        self.string_type = string_type
+
+    def is_equal(self, other):
+        if isinstance(other, StringConstant):
+            return (self.literal == other.literal and
+                    self.string_type == other.string_type)
+        return False
 
     def __str__(self):
         return '"{}"'.format(self.literal)

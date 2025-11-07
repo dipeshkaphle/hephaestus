@@ -918,7 +918,8 @@ def get_type_hint(expr, context: ctx.Context, namespace: Tuple[str],
             return _return_type_hint(factory.get_char_type())
 
         if isinstance(expr, ast.StringConstant):
-            return _return_type_hint(factory.get_string_type())
+            # Check if the constant has a stored type (e.g., StringLiteralType)
+            return _return_type_hint(expr.string_type or factory.get_string_type())
 
         if isinstance(expr, ast.BinaryOp):
             return _return_type_hint(factory.get_boolean_type())
