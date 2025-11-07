@@ -3113,7 +3113,8 @@ class Generator():
             cls_type, params_map = cls.get_type(), {}
 
         # Generate func_type_var_map
-        for attr in getattr(cls, attr_name):
+        attrs = getattr(cls, attr_name)
+        for attr in attrs:
             if not self._is_sigtype_compatible(attr, etype, params_map,
                                                signature, False):
                 continue
@@ -3131,7 +3132,36 @@ class Generator():
                                         params_map, func_type_var_map))
             return gu.AttrAccessInfo(cls_type, params_map, attr,
                                      func_type_var_map)
-        return None
+
+        # If we reach here, no attributes matched - throw exception with debug info
+        attr_details = []
+        for attr in attrs:
+            attr_type = attr.get_type()
+            substituted_type = tp.substitute_type(attr_type, params_map)
+            attr_details.append({
+                'name': attr.name if hasattr(attr, 'name') else str(attr),
+                'original_type': str(attr_type),
+                'substituted_type': str(substituted_type),
+                'is_compatible': self._is_sigtype_compatible(attr, etype, params_map, signature, False)
+            })
+
+        error_msg = (
+            f"_gen_matching_class failed to find compatible attribute!\n"
+            f"  Class name: {cls.name}\n"
+            f"  Class is_interface: {cls.is_interface()}\n"
+            f"  Class is_parameterized: {cls.is_parameterized()}\n"
+            f"  Class type_parameters: {[tp.name for tp in cls.type_parameters]}\n"
+            f"  Requested attr_name: {attr_name}\n"
+            f"  Number of {attr_name}: {len(attrs)}\n"
+            f"  Expected etype: {etype}\n"
+            f"  Expected etype type: {type(etype).__name__}\n"
+            f"  params_map: {params_map}\n"
+            f"  type_var_map (reversed): {type_var_map}\n"
+            f"  etype2 (substituted): {etype2}\n"
+            f"  can_wildcard: {can_wildcard}\n"
+            f"  Attribute details: {attr_details}\n"
+        )
+        raise RuntimeError(error_msg)
 
     # Where
 

@@ -875,9 +875,15 @@ class TypeDependencyAnalysis(DefaultVisitor):
                 return
             if decl_ret_type.is_wildcard():
                 return
-            self._infer_type_variables_parameterized_by_ret(
-                parent_id, node_id, decl_ret_type, func_type_parameters,
-                type_var_nodes)
+            # Only parameterized types have type variable assignments
+            # UnionType and other compound types don't have this method
+            if decl_ret_type.is_parameterized():
+                self._infer_type_variables_parameterized_by_ret(
+                    parent_id, node_id, decl_ret_type, func_type_parameters,
+                    type_var_nodes)
+            else:
+                # For non-parameterized types (e.g., UnionType), record the node
+                self._inferred_nodes[parent_id].append(TypeNode(ret_type, None))
 
     def visit_func_call(self, node):
         parent_node_id, nu = self._get_node_id()
