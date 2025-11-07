@@ -3091,9 +3091,10 @@ class Generator():
         # Get receiver
         if cls.is_parameterized():
             type_map = {v: k for k, v in type_var_map.items()}
-            if etype2.is_primitive() and (
-                    etype2.box_type() == self.bt_factory.get_void_type()):
-                type_map = None
+            # Note: We must use the type_map to ensure the instantiation
+            # maps type parameters back to the original type variables in etype.
+            # Setting type_map = None causes random instantiation which breaks
+            # the guarantee that the generated field matches etype.
 
             if can_wildcard:
                 variance_choices = gu.init_variance_choices(type_map)
