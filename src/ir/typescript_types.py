@@ -328,7 +328,7 @@ class TypeScriptBuiltinFactory(bt.BuiltinFactory):
             "NumberLiteralType": lambda etype: ast.IntegerConstant(
                 etype.literal, NumberLiteralType(etype.literal)),
             "StringLiteralType": lambda etype: ast.StringConstant(
-                etype.literal),
+                etype.literal, etype),
             "UnionType": lambda etype: self._union_type_factory.get_union_constant(
                 etype, constants),
         }
