@@ -493,7 +493,8 @@ class TypeScriptTranslator(BaseTranslator):
         elif isinstance(node.integer_type, tst.NumberLiteralType):
             literal = "{} as {}".format(str(node.literal), str(node.literal))
         else:
-            literal = str(node.literal)
+            # Add type assertion to prevent literal type inference
+            literal = "{} as number".format(str(node.literal))
         self._children_res.append(" "*self.ident + literal)
 
     @append_to
@@ -501,6 +502,9 @@ class TypeScriptTranslator(BaseTranslator):
         literal = str(node.literal)
         if isinstance(node.real_type, tst.NumberLiteralType):
             literal = "{} as {}".format(str(node.literal), str(node.literal))
+        else:
+            # Add type assertion to prevent literal type inference
+            literal = "{} as number".format(str(node.literal))
         self._children_res.append(" "*self.ident + literal)
 
     @append_to
@@ -510,7 +514,17 @@ class TypeScriptTranslator(BaseTranslator):
 
     @append_to
     def visit_string_constant(self, node):
-        self._children_res.append('"{}"'.format(node.literal))
+        # Add type assertion based on stored type
+        if isinstance(node.string_type, tst.StringLiteralType):
+            # Want literal type: "value" as "value"
+            literal = '"{}" as "{}"'.format(node.literal, node.literal)
+        elif node.string_type is not None:
+            # Want general string type: "value" as string
+            literal = '"{}" as string'.format(node.literal)
+        else:
+            # No type specified, let TypeScript infer (will be literal type)
+            literal = '"{}"'.format(node.literal)
+        self._children_res.append(literal)
 
     @append_to
     def visit_boolean_constant(self, node):
@@ -519,7 +533,9 @@ class TypeScriptTranslator(BaseTranslator):
     @append_to
     def visit_array_expr(self, node):
         if not node.length:
-            return self._children_res.append("[]")
+            # Empty array needs type assertion
+            array_type_str = self.get_type_name(node.array_type)
+            return self._children_res.append("([] as {})".format(array_type_str))
         old_ident = self.ident
         self.ident = 0
         children = node.children()
@@ -527,8 +543,11 @@ class TypeScriptTranslator(BaseTranslator):
             c.accept(self)
         children_res = self.pop_children_res(children)
         self.ident = old_ident
-        return self._children_res.append("[{}]".format(
-            ", ".join(children_res)))
+        # Add type assertion to prevent widening of literal types
+        array_literal = "[{}]".format(", ".join(children_res))
+        array_type_str = self.get_type_name(node.array_type)
+        return self._children_res.append("({} as {})".format(
+            array_literal, array_type_str))
 
     @append_to
     def visit_variable(self, node):
