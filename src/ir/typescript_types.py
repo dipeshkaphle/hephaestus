@@ -472,6 +472,11 @@ class UnionType(TypeScriptBuiltin):
     def has_type_variables(self):
         return any(t.has_type_variables() for t in self.types)
 
+    def get_type_variable_assignments(self):
+        # UnionType doesn't have type parameters like ParameterizedType,
+        # so return an empty dict
+        return {}
+
     def get_type_variables(self, factory):
         # This function actually returns a dict of the enclosing type variables
         # along with the set of their bounds.

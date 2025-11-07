@@ -136,6 +136,8 @@ class TypeOverwriting(Transformation):
                 for i, t_param in enumerate(type_parameters)
             }
             n.t.type_args[indexes[type_param.t]] = ir_type
+            # Force explicit type arguments so the type error is visible
+            n.t.can_infer_type_args = False
         self.is_transformed = True
         self.error_injected = "{} expected but {} found in node {}".format(
             str(old_type), str(ir_type), n.node_id)
