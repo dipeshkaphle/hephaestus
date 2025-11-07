@@ -995,7 +995,33 @@ class TypeDependencyAnalysis(DefaultVisitor):
                 # Compute how the type variables at declaration point are
                 # instantiated based on the type of passed in the corresponding
                 # argument.
-                type_assignments = tu.unify_types(n.target.get_type(), t,
+                target_type = n.target.get_type()
+
+                # Debug: Check for None before calling unify_types
+                if target_type is None:
+                    raise RuntimeError(
+                        f"_infer_type_variables: n.target.get_type() returned None!\n"
+                        f"  node_id: {node_id}\n"
+                        f"  t: {t}\n"
+                        f"  t type: {type(t).__name__ if t is not None else 'None'}\n"
+                        f"  param_decl: {param_decl}\n"
+                        f"  n: {n}\n"
+                        f"  n.target: {n.target}\n"
+                        f"  n.target type: {type(n.target).__name__}\n"
+                    )
+
+                if t is None:
+                    raise RuntimeError(
+                        f"_infer_type_variables: parameter t is None!\n"
+                        f"  node_id: {node_id}\n"
+                        f"  param_decl: {param_decl}\n"
+                        f"  param_decl.get_type(): {param_decl.get_type() if hasattr(param_decl, 'get_type') else 'N/A'}\n"
+                        f"  n: {n}\n"
+                        f"  n.target: {n.target}\n"
+                        f"  target_type: {target_type}\n"
+                    )
+
+                type_assignments = tu.unify_types(target_type, t,
                                                   self._bt_factory,
                                                   same_type=False)
             # We know now that that the argument corresponds to a
@@ -1058,6 +1084,17 @@ class TypeDependencyAnalysis(DefaultVisitor):
         # see if any of its type variables can be inferred by the arguments
         # passed in the invocation, i.e., A<String>(x)
         for f, f_type in inferred_fields:
+            # Debug: Check if f_type is None
+            if f_type is None:
+                raise RuntimeError(
+                    f"_infer_type_variables_by_call_arguments: f_type is None!\n"
+                    f"  node_id: {node_id}\n"
+                    f"  f: {f}\n"
+                    f"  f type: {type(f).__name__}\n"
+                    f"  f.get_type(): {f.get_type() if hasattr(f, 'get_type') else 'N/A'}\n"
+                    f"  inferred_fields: {inferred_fields}\n"
+                )
+
             if not f_type.has_type_variables():
                 continue
 
@@ -1171,7 +1208,20 @@ class TypeDependencyAnalysis(DefaultVisitor):
                 # Here we add fields initialized in a constructor invocation,
                 # which are also used for inferring the type arguments of
                 # the corresponding type constructor instantiation.
-                inferred_fields.append((f, class_decl.fields[i].get_type()))
+                field_type = class_decl.fields[i].get_type()
+
+                # Debug: Check if field type is None
+                if field_type is None:
+                    raise RuntimeError(
+                        f"visit_new: class_decl.fields[{i}].get_type() returned None!\n"
+                        f"  node.class_type: {node.class_type}\n"
+                        f"  class_decl.name: {class_decl.name}\n"
+                        f"  class_decl.fields[{i}]: {class_decl.fields[i]}\n"
+                        f"  class_decl.fields[{i}].name: {class_decl.fields[i].name if hasattr(class_decl.fields[i], 'name') else 'N/A'}\n"
+                        f"  All fields: {[(fld.name if hasattr(fld, 'name') else str(fld), fld.get_type()) for fld in class_decl.fields]}\n"
+                    )
+
+                inferred_fields.append((f, field_type))
             self._handle_declaration(node_id, f, c,
                                      'field_type')
 
