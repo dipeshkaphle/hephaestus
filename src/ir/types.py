@@ -1082,16 +1082,25 @@ class ParameterizedType(SimpleClassifier):
     def __eq__(self, other: Type):
         if not isinstance(other, ParameterizedType):
             return False
+        # Compare type parameters by name and count, not by object equality.
+        # Each ParameterizedType deepcopies its type constructor (line 923), so
+        # different instances have different type parameter objects even if they
+        # represent the same type. We compare by name instead.
+        type_params_equal = (
+            len(self.t_constructor.type_parameters) == len(other.t_constructor.type_parameters) and
+            all(tp1.name == tp2.name
+                for tp1, tp2 in zip(self.t_constructor.type_parameters,
+                                    other.t_constructor.type_parameters))
+        )
         return (self.name == other.name and
                 self.supertypes == other.supertypes and
                 self.t_constructor.__class__ == other.t_constructor.__class__ and
-                self.t_constructor.type_parameters ==
-                other.t_constructor.type_parameters and
+                type_params_equal and
                 self.type_args == other.type_args)
 
     def __hash__(self):
-        return hash(str(self.name) + str(self.supertypes) + str(self.type_args)
-                    + str(self.t_constructor.type_parameters))
+        # Hash should be consistent with __eq__: only use name and type_args
+        return hash((self.name, tuple(str(t) for t in self.type_args)))
 
     def __str__(self):
         return "{}<{}>".format(self.name,
