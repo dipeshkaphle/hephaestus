@@ -329,6 +329,8 @@ class TypeScriptBuiltinFactory(bt.BuiltinFactory):
                 etype.literal, NumberLiteralType(etype.literal)),
             "StringLiteralType": lambda etype: ast.StringConstant(
                 etype.literal, etype),
+            "BooleanLiteralType": lambda etype: ast.BooleanConstant(
+                str(etype.literal).lower(), etype),
             "UnionType": lambda etype: self._union_type_factory.get_union_constant(
                 etype, constants),
         }
@@ -589,18 +591,54 @@ class StringLiteralType(TypeScriptBuiltin):
         return hash(str(self.name) + str(self.literal))
 
 
+class BooleanLiteralType(TypeScriptBuiltin):
+    def __init__(self, literal, name="BooleanLiteralType", primitive=False):
+        super().__init__(name, primitive)
+        assert isinstance(literal, bool), "Boolean literal must be a bool"
+        self.literal = literal
+        self.supertypes.append(BooleanType())
+
+    def get_literal(self):
+        return str(self.literal).lower()
+
+    @two_way_subtyping
+    def is_subtype(self, other):
+        if isinstance(other, AliasType):
+            other = other.alias
+        
+        if isinstance(other, BooleanType):
+            return True
+        
+        return (isinstance(other, BooleanLiteralType) and
+                other.get_literal() == self.get_literal())
+
+    def get_name(self):
+        return self.name
+
+    def __eq__(self, other):
+        return (self.__class__ == other.__class__ and
+                self.name == other.name and
+                self.literal == other.literal)
+
+    def __hash__(self):
+        return hash((self.name, self.literal))
+
+
 class LiteralTypeFactory:
-    def __init__(self, str_limit, num_limit):
+    def __init__(self, str_limit, num_limit, bool_limit=2):
         self.str_literals = []
         self.num_literals = []
+        self.bool_literals = []
         # Define max number for generated literals
         self.str_limit = str_limit
         self.num_limit = num_limit
+        self.bool_limit = bool_limit
 
     def get_literal_types(self):
         sl = self.gen_string_literal()
         nl = self.gen_number_literal()
-        return [sl, nl]
+        bl = self.gen_boolean_literal()
+        return [sl, nl, bl]
 
     def gen_string_literal(self):
         lit = None
@@ -628,6 +666,21 @@ class LiteralTypeFactory:
             self.num_literals.append(lit)
         else:
             lit = ut.random.choice(self.num_literals)
+        return lit
+
+    def gen_boolean_literal(self):
+        # There are only two boolean literals, so we don't need a limit check like the others
+        if len(self.bool_literals) < 2:
+            if not any(l.literal for l in self.bool_literals):
+                lit = BooleanLiteralType(True)
+            elif any(l.literal for l in self.bool_literals) and not all(l.literal for l in self.bool_literals):
+                 lit = BooleanLiteralType(ut.random.choice([True, False]))
+            else:
+                lit = BooleanLiteralType(False)
+            if lit not in self.bool_literals:
+                self.bool_literals.append(lit)
+        else:
+            lit = ut.random.choice(self.bool_literals)
         return lit
 
 

@@ -495,8 +495,8 @@ class TypeDependencyAnalysis(DefaultVisitor):
 
     def visit_boolean_constant(self, node):
         node_id, _ = self._get_node_id()
-        self._inferred_nodes[node_id].append(
-            TypeNode(self._bt_factory.get_boolean_type(), None))
+        inferred_type = node.boolean_type if node.boolean_type else self._bt_factory.get_boolean_type()
+        self._inferred_nodes[node_id].append(TypeNode(inferred_type, None))
 
     def visit_char_constant(self, node):
         node_id, _ = self._get_node_id()

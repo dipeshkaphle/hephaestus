@@ -106,7 +106,8 @@ class TypeScriptTranslator(BaseTranslator):
                 inner = f"({inner})"
             return f"keyof {inner}"
         if (isinstance(t, tst.NumberLiteralType) or
-            isinstance(t, tst.StringLiteralType)):
+            isinstance(t, tst.StringLiteralType) or
+            isinstance(t, tst.BooleanLiteralType)):
             return str(t.get_literal())
         if t.name == 'UnionType':
             return self.get_union(t)
@@ -553,7 +554,14 @@ class TypeScriptTranslator(BaseTranslator):
 
     @append_to
     def visit_boolean_constant(self, node):
-        self._children_res.append(str(node.literal))
+        # Add type assertion based on stored type
+        if isinstance(node.boolean_type, tst.BooleanLiteralType):
+            # Want literal type: "true" as "true"
+            literal = '{} as {}'.format(str(node.literal).lower(), str(node.literal).lower())
+        else:
+            # Default to base boolean type to prevent unwanted literal inference
+            literal = '{} as boolean'.format(str(node.literal).lower())
+        self._children_res.append(literal)
 
     @append_to
     def visit_array_expr(self, node):
