@@ -1082,6 +1082,20 @@ class ParameterizedType(SimpleClassifier):
         }
         type_con = perform_type_substitution(
             self.t_constructor, new_type_map, cond)
+
+        # Also substitute supertypes directly using the original type_map
+        # This handles cases where supertypes already have concrete type args
+        # that need to be substituted (e.g., Miffed<I> -> Miffed<Z> needs
+        # supertypes to go from Petard<I> -> Petard<Z>)
+        substituted_supertypes = []
+        for supertype in type_con.supertypes:
+            if hasattr(supertype, 'substitute_type'):
+                substituted_supertypes.append(
+                    supertype.substitute_type(type_map, cond))
+            else:
+                substituted_supertypes.append(supertype)
+        type_con.supertypes = substituted_supertypes
+
         return ParameterizedType(type_con, type_args)
 
     @property
