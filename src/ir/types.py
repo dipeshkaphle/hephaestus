@@ -596,7 +596,7 @@ class TypeParameter(AbstractType):
                 self.bound == other.bound)
 
     def __hash__(self):
-        return hash(str(self.name) + str(self.variance))
+        return hash((self.name, self.variance, self.bound))
 
     def __str__(self):
         return "{}{}{}".format(
@@ -716,8 +716,6 @@ def perform_type_substitution(etype, type_map,
     for t in etype.supertypes:
         if t.is_parameterized():
             substituted = t.substitute_type(type_map, cond=lambda t: False)
-            # Debug: Verify substitution worked
-            # print(f"DEBUG perform_type_substitution: {t} -> {substituted} using {type_map}")
             supertypes.append(substituted)
         else:
             supertypes.append(t)
@@ -762,11 +760,10 @@ class TypeConstructor(AbstractType):
     def __eq__(self, other: AbstractType):
         return (self.__class__ == other.__class__ and
                 self.name == other.name and
-                str(self.type_parameters) == str(other.type_parameters))
+                self.type_parameters == other.type_parameters)
 
     def __hash__(self):
-        return hash(str(self.__class__) + str(self.name) + str(self.supertypes)
-                    + str(self.type_parameters))
+        return hash((self.name, tuple(self.type_parameters)))
 
     def is_type_constructor(self):
         return True
@@ -1111,15 +1108,11 @@ class ParameterizedType(SimpleClassifier):
     def __eq__(self, other: Type):
         if not isinstance(other, ParameterizedType):
             return False
-        return (self.name == other.name and
-                self.supertypes == other.supertypes and
-                self.t_constructor.__class__ == other.t_constructor.__class__ and
-                self.t_constructor.type_parameters == other.t_constructor.type_parameters and
+        return (self.t_constructor == other.t_constructor and
                 self.type_args == other.type_args)
 
     def __hash__(self):
-        return hash(str(self.name) + str(self.supertypes) + str(self.type_args)
-                    + str(self.t_constructor.type_parameters))
+        return hash((self.t_constructor, tuple(self.type_args)))
 
     def __str__(self):
         return "{}<{}>".format(self.name,
