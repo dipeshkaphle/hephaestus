@@ -49,7 +49,7 @@ def test_bug_109_exact():
     ranch_constructor = tp.TypeConstructor(
         'Ranch',
         [Q_param, W_param, Z_param],
-        ranch_classifier
+        classifier=ranch_classifier
     )
 
     # Create Ranch<E, undefined, number> - this is the SUPERTYPE of Bronson<E, undefined, E>
