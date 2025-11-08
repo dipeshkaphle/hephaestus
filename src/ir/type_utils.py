@@ -912,7 +912,7 @@ def get_type_hint(expr, context: ctx.Context, namespace: Tuple[str],
             return _return_type_hint(expr.real_type)
 
         if isinstance(expr, ast.BooleanConstant):
-            return _return_type_hint(factory.get_boolean_type())
+            return _return_type_hint(expr.boolean_type or factory.get_boolean_type())
 
         if isinstance(expr, ast.CharConstant):
             return _return_type_hint(factory.get_char_type())
