@@ -105,6 +105,11 @@ class ProgramProcessor():
             logger=logger,
             options=self.args.options["Generator"])
         program = generator.generate(context=context)
+
+        # Attach the transformation tracker
+        from src.transformations.tracker import TransformationTracker
+        program.transformation_tracker = TransformationTracker(enabled=True)
+
         return program, True
 
     def can_transform(self):

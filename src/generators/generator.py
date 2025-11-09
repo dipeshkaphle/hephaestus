@@ -2862,20 +2862,22 @@ class Generator():
         # VALIDATION: Ensure that after type substitution, the attribute type
         # is actually compatible with etype. This prevents bugs where unification
         # incorrectly maps type parameters from different scopes.
-        if attr_name == 'fields':
-            substituted_attr_type = tp.substitute_type(attr.get_type(), params_map)
-            if subtype:
-                if not substituted_attr_type.is_assignable(etype):
-                    msg = (f"REJECTING: After substitution, field type {substituted_attr_type} "
-                           f"is NOT assignable to target type {etype}")
-                    log(self.logger, msg)
-                    return None
-            else:
-                if substituted_attr_type != etype:
-                    msg = (f"REJECTING: After substitution, field type {substituted_attr_type} "
-                           f"!= target type {etype}")
-                    log(self.logger, msg)
-                    return None
+        # Apply to both fields and functions
+        all_params_map = params_map.copy()
+        all_params_map.update(func_type_var_map)
+        substituted_attr_type = tp.substitute_type(attr.get_type(), all_params_map)
+        if subtype:
+            if not substituted_attr_type.is_assignable(etype):
+                msg = (f"REJECTING: After substitution, {attr_name} type {substituted_attr_type} "
+                       f"is NOT assignable to target type {etype}")
+                log(self.logger, msg)
+                return None
+        else:
+            if substituted_attr_type != etype:
+                msg = (f"REJECTING: After substitution, {attr_name} type {substituted_attr_type} "
+                       f"!= target type {etype}")
+                log(self.logger, msg)
+                return None
 
         return gu.AttrAccessInfo(cls_type, params_map, attr, func_type_var_map)
 
@@ -3048,9 +3050,10 @@ class Generator():
         # Get receiver
         if cls.is_parameterized():
             type_map = {v: k for k, v in type_var_map.items()}
-            if etype2.is_primitive() and (
-                    etype2.box_type() == self.bt_factory.get_void_type()):
-                type_map = None
+            # Note: We must use the type_map to ensure the instantiation
+            # maps type parameters back to the original type variables in etype.
+            # Setting type_map = None causes random instantiation which breaks
+            # the guarantee that the generated field matches etype.
 
             if can_wildcard:
                 variance_choices = gu.init_variance_choices(type_map)
@@ -3069,7 +3072,8 @@ class Generator():
             cls_type, params_map = cls.get_type(), {}
 
         # Generate func_type_var_map
-        for attr in getattr(cls, attr_name):
+        attrs = getattr(cls, attr_name)
+        for attr in attrs:
             if not self._is_sigtype_compatible(attr, etype, params_map,
                                                signature, False):
                 continue
@@ -3085,8 +3089,21 @@ class Generator():
                    "ClassTypeVarMap {}, FuncTypeVarMap {}")
             log(self.logger, msg.format(cls.name, attr_name, etype,
                                         params_map, func_type_var_map))
+
+            # VALIDATION: Ensure generated attribute is compatible with etype
+            all_params_map = params_map.copy()
+            all_params_map.update(func_type_var_map)
+            substituted_attr_type = tp.substitute_type(attr.get_type(), all_params_map)
+            # For generated classes, we expect exact match (signature=False uses exact match in _is_sigtype_compatible)
+            if substituted_attr_type != etype:
+                msg = (f"VALIDATION FAILED: Generated {attr_name} type {substituted_attr_type} "
+                       f"!= target type {etype}")
+                log(self.logger, msg)
+                # This should not happen for generated classes, but log for debugging
+
             return gu.AttrAccessInfo(cls_type, params_map, attr,
                                      func_type_var_map)
+
         return None
 
     # Where

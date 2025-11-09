@@ -147,7 +147,7 @@ def test_structural_classifier_substitution():
     ranch_constructor = tp.TypeConstructor(
         'Ranch',
         [Q_param],
-        ranch_classifier
+        classifier=ranch_classifier
     )
 
     # Ranch<E>

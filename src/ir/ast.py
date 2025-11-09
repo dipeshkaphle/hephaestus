@@ -972,10 +972,17 @@ class RealConstant(Constant):
 
 
 class BooleanConstant(Constant):
-    def __init__(self, literal: str):
+    def __init__(self, literal: str, boolean_type=None):
         assert literal in ('true', 'false'), (
             'Boolean literal is not "true" or "false"')
         super().__init__(literal)
+        self.boolean_type = boolean_type
+
+    def is_equal(self, other):
+        if isinstance(other, BooleanConstant):
+            return (self.literal == other.literal and
+                    self.boolean_type == other.boolean_type)
+        return False
 
 
 class CharConstant(Constant):
@@ -989,6 +996,15 @@ class CharConstant(Constant):
 
 
 class StringConstant(Constant):
+    def __init__(self, literal: str, string_type=None):
+        super().__init__(literal)
+        self.string_type = string_type
+
+    def is_equal(self, other):
+        if isinstance(other, StringConstant):
+            return (self.literal == other.literal and
+                    self.string_type == other.string_type)
+        return False
 
     def __str__(self):
         return '"{}"'.format(self.literal)
