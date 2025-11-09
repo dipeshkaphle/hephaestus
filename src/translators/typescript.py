@@ -517,20 +517,20 @@ class TypeScriptTranslator(BaseTranslator):
         if isinstance(node.integer_type, tst.BigIntegerType):
             literal = "BigInt({})".format(str(node.literal))
         elif isinstance(node.integer_type, tst.NumberLiteralType):
-            literal = "{} as {}".format(str(node.literal), str(node.literal))
+            literal = "( {} as {} )".format(str(node.literal), str(node.literal))
         else:
             # Add type assertion to prevent literal type inference
-            literal = "{} as number".format(str(node.literal))
+            literal = "( {} as number )".format(str(node.literal))
         self._children_res.append(" "*self.ident + literal)
 
     @append_to
     def visit_real_constant(self, node):
         literal = str(node.literal)
         if isinstance(node.real_type, tst.NumberLiteralType):
-            literal = "{} as {}".format(str(node.literal), str(node.literal))
+            literal = "( {} as {} )".format(str(node.literal), str(node.literal))
         else:
             # Add type assertion to prevent literal type inference
-            literal = "{} as number".format(str(node.literal))
+            literal = "( {} as number )".format(str(node.literal))
         self._children_res.append(" "*self.ident + literal)
 
     @append_to
@@ -543,10 +543,10 @@ class TypeScriptTranslator(BaseTranslator):
         # Add type assertion based on stored type
         if isinstance(node.string_type, tst.StringLiteralType):
             # Want literal type: "value" as "value"
-            literal = '"{}" as "{}"'.format(node.literal, node.literal)
+            literal = '( "{}" as "{}" )'.format(node.literal, node.literal)
         elif node.string_type is not None:
             # Want general string type: "value" as string
-            literal = '"{}" as string'.format(node.literal)
+            literal = '( "{}" as string )'.format(node.literal)
         else:
             # No type specified, let TypeScript infer (will be literal type)
             literal = '"{}"'.format(node.literal)
@@ -557,10 +557,10 @@ class TypeScriptTranslator(BaseTranslator):
         # Add type assertion based on stored type
         if isinstance(node.boolean_type, tst.BooleanLiteralType):
             # Want literal type: "true" as "true"
-            literal = '{} as {}'.format(str(node.literal).lower(), str(node.literal).lower())
+            literal = '( {} as {} )'.format(str(node.literal).lower(), str(node.literal).lower())
         else:
             # Default to base boolean type to prevent unwanted literal inference
-            literal = '{} as boolean'.format(str(node.literal).lower())
+            literal = '( {} as boolean )'.format(str(node.literal).lower())
         self._children_res.append(literal)
 
     @append_to

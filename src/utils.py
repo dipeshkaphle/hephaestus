@@ -105,6 +105,12 @@ def dump_program_with_trace(program_path, trace_path, program):
     if hasattr(program.context, 'debug_tracer') and program.context.debug_tracer.enabled:
         program.context.debug_tracer.to_json(trace_path)
 
+    # Save transformation tracker data
+    if hasattr(program, 'transformation_tracker') and program.transformation_tracker.enabled:
+        transform_trace_path = os.path.join(os.path.dirname(program_path), "transformations.json")
+        with open(transform_trace_path, 'w') as f:
+            f.write(program.transformation_tracker.to_json_string())
+
 
 def load_program_with_trace(program_path, trace_path):
     """

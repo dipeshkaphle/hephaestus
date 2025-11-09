@@ -212,7 +212,26 @@ def _construct_related_types(etype: tp.ParameterizedType, types, get_subtypes,
             t_args = [t for t in t_args if not t.is_primitive()]
             t_arg = utils.random.choice(t_args)
             type_var_map[t_param] = t_arg
-    return etype.t_constructor.new(list(type_var_map.values()))
+
+    # Construct the new type
+    new_type = etype.t_constructor.new(list(type_var_map.values()))
+
+    # VALIDATION: For function types, verify the constructed type is actually a valid subtype/supertype
+    # This is critical because function types have contravariant parameters
+    is_function_type = getattr(new_type, 'is_function_type', lambda: False)()
+    if is_function_type:
+        if get_subtypes:
+            # We're looking for subtypes, so new_type should be a subtype of etype
+            if not new_type.is_subtype(etype):
+                # Constructed type is not a valid subtype, return original
+                return etype
+        else:
+            # We're looking for supertypes, so etype should be a subtype of new_type
+            if not etype.is_subtype(new_type):
+                # Constructed type is not a valid supertype, return original
+                return etype
+
+    return new_type
 
 
 def to_type(stype, types):
@@ -227,8 +246,15 @@ def _find_types(etype, types, get_subtypes, include_self, bound=None,
     # Otherwise, if we want to find the supertypes of a given type, `bound`
     # is interpreted a greatest bound.
     if not get_subtypes:
-        # Find supertypes
+        # Find supertypes - use get_supertypes() for transitive closure,
+        # but also check types list for any types that etype is a subtype of
         t_set = etype.get_supertypes()
+        for c in types:
+            selected_type = c.get_type() if hasattr(c, 'get_type') else c
+            if etype == selected_type:
+                continue
+            if etype.is_subtype(selected_type):
+                t_set.add(selected_type)
     else:
         # Find subtypes
         t_set = set()
@@ -288,24 +314,47 @@ def get_irrelevant_parameterized_type(etype, types, type_args_map,
     new_type_args = list(type_args)
 
     for i, t_param in enumerate(etype.type_parameters):
+        # For invariant parameters, just pick any different type
+        # For variant parameters, find a truly irrelevant type
         if t_param.is_invariant():
             type_list = [to_type(t, types)
                          for t in types
                          if t != type_args[i]]
-            new_type_args[i] = utils.random.choice(type_list)
+            if type_list:
+                new_type_args[i] = utils.random.choice(type_list)
+            # Otherwise keep the original
         else:
-            t = find_irrelevant_type(type_args[i], types, factory)
+            # For variant parameters, try to find an irrelevant type
+            t, _ = find_irrelevant_type(type_args[i], types, factory)
             if t is None:
+                # Keep the original if we can't find irrelevant
                 continue
             new_type_args[i] = t
 
     if new_type_args == type_args:
         return None
-    return etype.new(new_type_args)
+
+    # Create the new parameterized type
+    new_type = etype.new(new_type_args)
+    original_type = etype.new(type_args)
+
+    # Defensive check: ensure the instantiated types are actually irrelevant
+    # This is critical for structural typing where phantom type parameters
+    # might make Stocked<A,B> structurally equivalent to Stocked<C,D>
+    try:
+        if new_type.is_subtype(original_type) or original_type.is_subtype(new_type):
+            # They have a subtyping relationship - not irrelevant!
+            return None
+    except (AttributeError, NotImplementedError):
+        # Some types may not implement is_subtype properly
+        # In this case, accept the new type (best effort)
+        pass
+
+    return new_type
 
 
 def find_irrelevant_type(etype: tp.Type, types: List[tp.Type],
-                         factory: bt.BuiltinFactory) -> tp.Type:
+                         factory: bt.BuiltinFactory) -> Tuple[tp.Type, Dict]:
     """
     Find a type that is irrelevant to the given type.
 
@@ -319,11 +368,12 @@ def find_irrelevant_type(etype: tp.Type, types: List[tp.Type],
         return cls
 
     if etype == factory.get_any_type():
-        return None
+        return None, None
 
     if isinstance(etype, tp.TypeParameter):
         if etype.bound is None or etype.bound == factory.get_any_type():
-            return choose_type(types, only_regular=True)
+            # Since we can't determine relevance, we don't have debug info to return.
+            return choose_type(types, only_regular=True), {}
         else:
             etype = etype.bound
 
@@ -340,9 +390,17 @@ def find_irrelevant_type(etype: tp.Type, types: List[tp.Type],
         for t in relevant_types
         if isinstance(t, tp.ParameterizedType)
     }
-    available_types = [t for t in types if t not in relevant_types]
+    available_types = [t for t in types if t not in relevant_types ]
+
+    debug_info = {
+        "available_types_pool": [str(t) for t in types],
+        "relevant_types_found": [str(t) for t in relevant_types],
+        "candidate_pool": [str(t) for t in available_types]
+    }
+
     if not available_types:
-        return None
+        return None, debug_info
+
     t = utils.random.choice(available_types)
     if t.is_type_constructor():
         # Must instantiate the given type constrcutor. Also pass the map of
@@ -350,8 +408,8 @@ def find_irrelevant_type(etype: tp.Type, types: List[tp.Type],
         # with any parameterized type created by this type constructor.
         type_list = [t for t in types if t != etype]
         return get_irrelevant_parameterized_type(
-                t, type_list, type_args_map, factory)
-    return t
+                t, type_list, type_args_map, factory), debug_info
+    return t, debug_info
 
 
 def _update_type_constructor(etype, new_type):

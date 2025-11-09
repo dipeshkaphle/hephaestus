@@ -354,17 +354,108 @@ class ObjectType(TypeScriptBuiltin):
     def __init__(self, name="Object"):
         super().__init__(name, False)
 
+    @two_way_subtyping
+    def is_subtype(self, other):
+        """
+        Check if ObjectType <: other
+
+        In TypeScript, empty structural types (interfaces/classes with no fields
+        or methods) are structurally equivalent to Object because they impose
+        no requirements on their inhabitants.
+
+        Returns True when:
+        1. other is ObjectType itself
+        2. other is an empty structural type (no fields, no methods, but complete)
+        """
+        # Handle self-equality
+        if other == self:
+            return True
+
+        # Check if other is an empty structural type
+        if tp.is_structural_type(other) and tp.is_complete(other):
+            other_fields = (other._get_all_fields() if hasattr(other, '_get_all_fields')
+                          else {})
+            other_methods = (other._get_all_methods() if hasattr(other, '_get_all_methods')
+                           else {})
+
+            # Empty structural types are equivalent to Object
+            if not other_fields and not other_methods:
+                return True
+
+        return False
+
+    def two_way_subtyping(self, other):
+        """
+        Handle reverse check: is other <: ObjectType?
+
+        In TypeScript, empty structural types are subtypes of Object.
+
+        IMPORTANT: We cannot delegate to other.is_subtype(self) because that
+        would cause infinite recursion. We must do a concrete check here.
+        """
+        # Empty structural types are subtypes of Object
+        if tp.is_structural_type(other) and tp.is_complete(other):
+            other_fields = (other._get_all_fields() if hasattr(other, '_get_all_fields')
+                          else {})
+            other_methods = (other._get_all_methods() if hasattr(other, '_get_all_methods')
+                           else {})
+
+            # If other has no fields and no methods, it's a subtype of Object
+            if not other_fields and not other_methods:
+                return True
+
+        # Default: return False (conservative)
+        # We don't delegate to other.is_subtype(self) to avoid infinite recursion
+        return False
+
 
 class ObjectLowercaseType(TypeScriptBuiltin):
     def __init__(self, name="object"):
         super().__init__(name, False)
         self.supertypes.append(ObjectType())
 
+    @two_way_subtyping
+    def is_subtype(self, other):
+        """
+        Check if object (lowercase) <: other
+
+        Similar to ObjectType, empty structural types are equivalent to object.
+        """
+        # Check nominal subtyping (object <: Object)
+        if other in self.get_supertypes() or other == self:
+            return True
+
+        # Check if other is an empty structural type
+        if tp.is_structural_type(other) and tp.is_complete(other):
+            other_fields = (other._get_all_fields() if hasattr(other, '_get_all_fields')
+                          else {})
+            other_methods = (other._get_all_methods() if hasattr(other, '_get_all_methods')
+                           else {})
+
+            if not other_fields and not other_methods:
+                return True
+
+        return False
+
+    def two_way_subtyping(self, other):
+        """Handle reverse check: is other <: object?"""
+        # Empty structural types are subtypes of object
+        if tp.is_structural_type(other) and tp.is_complete(other):
+            other_fields = (other._get_all_fields() if hasattr(other, '_get_all_fields')
+                          else {})
+            other_methods = (other._get_all_methods() if hasattr(other, '_get_all_methods')
+                           else {})
+
+            if not other_fields and not other_methods:
+                return True
+
+        return False
+
 
 class VoidType(TypeScriptBuiltin):
     def __init__(self, name="void"):
         super().__init__(name, False)
-        self.supertypes.append(ObjectType())
+        # void is NOT assignable to Object in TypeScript strict mode
 
 
 class NumberType(TypeScriptBuiltin):
@@ -475,11 +566,15 @@ class AliasType(ObjectType):
     def get_type(self):
         return self.alias
 
+
     @two_way_subtyping
     def is_subtype(self, other):
         if isinstance(other, AliasType):
             return self.alias.is_subtype(other.alias)
         return self.alias.is_subtype(other)
+
+    def two_way_subtyping(self, other):
+        return other.is_subtype(self.alias)
 
     def box_type(self):
         return AliasType(self.alias, self.name)
@@ -527,9 +622,13 @@ class NumberLiteralType(TypeScriptBuiltin):
         elif isinstance(other, AliasType):
             return isinstance(other.alias, NumberType)
 
-        return ((isinstance(other, NumberLiteralType) and
-                  other.get_literal() == self.get_literal()) or
-                  isinstance(other, NumberType))
+        if ((isinstance(other, NumberLiteralType) and
+              other.get_literal() == self.get_literal()) or
+              isinstance(other, NumberType)):
+            return True
+
+        # Check transitive supertypes (e.g., NumberLiteralType <: Number <: Object)
+        return any(st.is_subtype(other) for st in self.supertypes)
 
     def get_name(self):
         return self.name
@@ -575,9 +674,13 @@ class StringLiteralType(TypeScriptBuiltin):
         elif isinstance(other, AliasType):
             return isinstance(other.alias, StringType)
 
-        return ((isinstance(other, StringLiteralType) and
-                  other.get_literal() == self.get_literal()) or
-                  isinstance(other, StringType))
+        if ((isinstance(other, StringLiteralType) and
+              other.get_literal() == self.get_literal()) or
+              isinstance(other, StringType)):
+            return True
+
+        # Check transitive supertypes (e.g., StringLiteralType <: String <: Object)
+        return any(st.is_subtype(other) for st in self.supertypes)
 
     def get_name(self):
         return self.name
@@ -605,12 +708,16 @@ class BooleanLiteralType(TypeScriptBuiltin):
     def is_subtype(self, other):
         if isinstance(other, AliasType):
             other = other.alias
-        
+
         if isinstance(other, BooleanType):
             return True
-        
-        return (isinstance(other, BooleanLiteralType) and
-                other.get_literal() == self.get_literal())
+
+        if (isinstance(other, BooleanLiteralType) and
+                other.get_literal() == self.get_literal()):
+            return True
+
+        # Check transitive supertypes (e.g., BooleanLiteralType <: Boolean <: Object)
+        return any(st.is_subtype(other) for st in self.supertypes)
 
     def get_name(self):
         return self.name
@@ -697,12 +804,8 @@ class UnionType(TypeScriptBuiltin):
 
     @two_way_subtyping
     def is_subtype(self, other):
-        if isinstance(other, UnionType):
-            for t in self.types:
-                if not any(t.is_subtype(other_t) for other_t in other.types):
-                    return False
-            return True
-        return other.name == 'Object'
+        # A union U is a subtype of a type T if and only if all members of U are subtypes of T.
+        return all(t.is_subtype(other) for t in self.types)
 
     def two_way_subtyping(self, other):
         return other in set(self.types)

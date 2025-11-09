@@ -2905,20 +2905,22 @@ class Generator():
         # VALIDATION: Ensure that after type substitution, the attribute type
         # is actually compatible with etype. This prevents bugs where unification
         # incorrectly maps type parameters from different scopes.
-        if attr_name == 'fields':
-            substituted_attr_type = tp.substitute_type(attr.get_type(), params_map)
-            if subtype:
-                if not substituted_attr_type.is_assignable(etype):
-                    msg = (f"REJECTING: After substitution, field type {substituted_attr_type} "
-                           f"is NOT assignable to target type {etype}")
-                    log(self.logger, msg)
-                    return None
-            else:
-                if substituted_attr_type != etype:
-                    msg = (f"REJECTING: After substitution, field type {substituted_attr_type} "
-                           f"!= target type {etype}")
-                    log(self.logger, msg)
-                    return None
+        # Apply to both fields and functions
+        all_params_map = params_map.copy()
+        all_params_map.update(func_type_var_map)
+        substituted_attr_type = tp.substitute_type(attr.get_type(), all_params_map)
+        if subtype:
+            if not substituted_attr_type.is_assignable(etype):
+                msg = (f"REJECTING: After substitution, {attr_name} type {substituted_attr_type} "
+                       f"is NOT assignable to target type {etype}")
+                log(self.logger, msg)
+                return None
+        else:
+            if substituted_attr_type != etype:
+                msg = (f"REJECTING: After substitution, {attr_name} type {substituted_attr_type} "
+                       f"!= target type {etype}")
+                log(self.logger, msg)
+                return None
 
         return gu.AttrAccessInfo(cls_type, params_map, attr, func_type_var_map)
 
@@ -3130,6 +3132,18 @@ class Generator():
                    "ClassTypeVarMap {}, FuncTypeVarMap {}")
             log(self.logger, msg.format(cls.name, attr_name, etype,
                                         params_map, func_type_var_map))
+
+            # VALIDATION: Ensure generated attribute is compatible with etype
+            all_params_map = params_map.copy()
+            all_params_map.update(func_type_var_map)
+            substituted_attr_type = tp.substitute_type(attr.get_type(), all_params_map)
+            # For generated classes, we expect exact match (signature=False uses exact match in _is_sigtype_compatible)
+            if substituted_attr_type != etype:
+                msg = (f"VALIDATION FAILED: Generated {attr_name} type {substituted_attr_type} "
+                       f"!= target type {etype}")
+                log(self.logger, msg)
+                # This should not happen for generated classes, but log for debugging
+
             return gu.AttrAccessInfo(cls_type, params_map, attr,
                                      func_type_var_map)
 

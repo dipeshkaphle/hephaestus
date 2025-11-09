@@ -289,7 +289,6 @@ def test_union_subtyping_number_bigint_incompatibility():
     # And number alone is NOT a subtype of bigint | "lorry"
     assert not tst.NumberType().is_subtype(bigint_or_lorry)
 
-
 def test_indexed_access_with_union_keys():
     """
     Test indexed access types with union of string literal keys.
@@ -372,3 +371,87 @@ def test_indexed_access_with_union_keys():
     # Test 6: Union key subtyping
     # If T["a" | "b"] resolves to number | string, it should be subtype of Object
     assert indexed_type.is_subtype(tst.ObjectType())
+
+def test_number_literal_subtype_of_number():
+    """Test that number literals are subtypes of number type"""
+    num_lit_5 = tst.NumberLiteralType(5)
+    num_lit_42 = tst.NumberLiteralType(42)
+    num_lit_neg = tst.NumberLiteralType(-10)
+    number_type = tst.NumberType()
+
+    # Number literals should be subtypes of number
+    assert num_lit_5.is_subtype(number_type)
+    assert num_lit_42.is_subtype(number_type)
+    assert num_lit_neg.is_subtype(number_type)
+
+    # But number should NOT be a subtype of a literal
+    assert not number_type.is_subtype(num_lit_5)
+    assert not number_type.is_subtype(num_lit_42)
+
+    # Different literals are not subtypes of each other
+    assert not num_lit_5.is_subtype(num_lit_42)
+    assert not num_lit_42.is_subtype(num_lit_5)
+
+
+def test_type_alias_number_subtyping():
+    """Test subtyping relationships with type aliases for numbers"""
+    # type NumAlias = number
+    num_alias = ts_ast.TypeAliasDeclaration("NumAlias", tst.NumberType()).get_type()
+    number_type = tst.NumberType()
+    num_lit = tst.NumberLiteralType(10)
+
+    # Type alias of number should be equivalent to number
+    assert num_alias.is_subtype(number_type)
+    assert number_type.is_subtype(num_alias)
+
+    # Number literal should be subtype of type alias to number
+    assert num_lit.is_subtype(num_alias)
+    assert not num_alias.is_subtype(num_lit)
+
+
+def test_type_alias_number_literal_subtyping():
+    """Test subtyping with type aliases that reference number literals"""
+    # type Five = 5
+    five_alias = ts_ast.TypeAliasDeclaration("Five", tst.NumberLiteralType(5)).get_type()
+    # type Ten = 10
+    ten_alias = ts_ast.TypeAliasDeclaration("Ten", tst.NumberLiteralType(10)).get_type()
+
+    number_type = tst.NumberType()
+    num_lit_5 = tst.NumberLiteralType(5)
+    num_lit_10 = tst.NumberLiteralType(10)
+
+    # Literal type aliases should be subtypes of number
+    assert five_alias.is_subtype(number_type)
+    assert ten_alias.is_subtype(number_type)
+
+    # Literal type aliases should be equivalent to their literals
+    assert five_alias.is_subtype(num_lit_5)
+    assert num_lit_5.is_subtype(five_alias)
+    assert ten_alias.is_subtype(num_lit_10)
+    assert num_lit_10.is_subtype(ten_alias)
+
+    # Different literal aliases are not subtypes of each other
+    assert not five_alias.is_subtype(ten_alias)
+    assert not ten_alias.is_subtype(five_alias)
+    assert not five_alias.is_subtype(num_lit_10)
+    assert not ten_alias.is_subtype(num_lit_5)
+
+
+def test_type_alias_nested_number_literal():
+    """Test nested type aliases with number literals"""
+    # type Five = 5
+    # type FiveAlias = Five
+    five_lit = tst.NumberLiteralType(5)
+    five_alias = ts_ast.TypeAliasDeclaration("Five", five_lit).get_type()
+    five_alias_alias = ts_ast.TypeAliasDeclaration("FiveAlias", five_alias).get_type()
+
+    number_type = tst.NumberType()
+
+    # Nested alias should still be subtype of number
+    assert five_alias_alias.is_subtype(number_type)
+    assert five_alias_alias.is_subtype(five_alias)
+    assert five_alias_alias.is_subtype(five_lit)
+
+    # And equivalent to the original literal
+    assert five_lit.is_subtype(five_alias_alias)
+    assert five_alias.is_subtype(five_alias_alias)

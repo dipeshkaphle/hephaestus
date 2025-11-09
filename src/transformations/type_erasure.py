@@ -3,6 +3,7 @@ from copy import copy
 import itertools
 
 from src.ir import ast
+from src.ir.typescript_ast import TypeAliasDeclaration
 from src.transformations.base import Transformation, change_namespace
 from src.analysis import type_dependency_analysis as tda
 
@@ -21,17 +22,12 @@ class TypeErasure(Transformation):
     def get_visitors(self):
         """Override to add language-specific visitors"""
         visitors = super().get_visitors()
-        # TypeScript-specific nodes
-        try:
-            from src.ir import typescript_ast as ts_ast
-            visitors[ts_ast.TypeAliasDeclaration] = self.visit_type_alias_decl
-        except ImportError:
-            pass
+        visitors[TypeAliasDeclaration] = self.visit_type_alias_decl
         return visitors
 
-    def visit_type_alias_decl(self, node):
-        """Handle TypeScript type alias declarations"""
+    def visit_type_alias_decl (self, node):
         return node
+
 
     @change_namespace
     def visit_class_decl(self, node):
@@ -77,6 +73,19 @@ class TypeErasure(Transformation):
             if tda.is_combination_feasible(c_type_graph, combination):
                 for g_node in combination:
                     self.is_transformed = True
+                    
+                    # Record the transformation
+                    if hasattr(self.program, 'transformation_tracker'):
+                        from src.transformations.tracker import TransformationRecord
+                        record = TransformationRecord(
+                            transformation_name=self.__class__.__name__,
+                            target_node_id=g_node.node_id,
+                            description=f"Omitted type for node '{g_node.node_id}'.",
+                            original_type=str(g_node.get_type()),
+                            new_type="omitted"
+                        )
+                        self.program.transformation_tracker.record(record)
+
                     if isinstance(g_node, tda.DeclarationNode):
                         g_node.decl.omit_type()
                     if isinstance(g_node,
