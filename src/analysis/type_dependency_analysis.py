@@ -5,6 +5,7 @@ from typing import NamedTuple, Union, Dict, List
 from src import utils, graph_utils as gu
 from src.ir import ast, types as tp, type_utils as tu, typescript_types as tst
 from src.ir.context import get_decl
+from src.ir.typescript_ast import TypeAliasDeclaration
 from src.ir.visitors import DefaultVisitor
 from src.transformations.base import change_namespace
 
@@ -454,8 +455,12 @@ class TypeDependencyAnalysis(DefaultVisitor):
     def get_visitors(self):
         visitors = super().get_visitors()
         # Language specific node visitors
-        visitors[tst.StringLiteralType] = self._visit_string_literal
+        visitors[TypeAliasDeclaration] =  self.visit_type_alias_decl
         return visitors
+
+        
+    def visit_type_alias_decl(self, node):
+        return node
 
     def visit_integer_constant(self, node):
         node_id, _ = self._get_node_id()

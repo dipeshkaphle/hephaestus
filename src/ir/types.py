@@ -1124,25 +1124,31 @@ class ParameterizedType(SimpleClassifier):
 
     @two_way_subtyping
     def is_subtype(self, other: Type) -> bool:
-        # If other is parameterized with the SAME constructor, use variance rules
+        # Check if both types have structural classifiers
+        has_structural = is_structural_type(self)
+        other_has_structural = is_structural_type(other)
+
+        # If other is parameterized with the SAME constructor
         if other.is_parameterized() and hasattr(other, 't_constructor'):
             if self.t_constructor == other.t_constructor:
-                # Same type constructor: use variance checking on type arguments
-                for tp, sarg, targ in zip(self.t_constructor.type_parameters,
-                                          self.type_args, other.type_args):
-                    if not _is_type_arg_contained(sarg, targ, tp):
-                        return False
-                return True
+                # For structural types, always check structural compatibility
+                # (fields and methods after type substitution), not just variance
+                if has_structural and other_has_structural:
+                    # Will do structural check below, fall through
+                    pass
+                else:
+                    # Same type constructor (non-structural): use variance checking on type arguments
+                    for tp, sarg, targ in zip(self.t_constructor.type_parameters,
+                                              self.type_args, other.type_args):
+                        if not _is_type_arg_contained(sarg, targ, tp):
+                            return False
+                    return True
 
         # First check nominal subtyping (inheritance)
         if super().is_subtype(other):
             return True
 
-        # Check if both types have structural classifiers (different constructors)
-        has_structural = is_structural_type(self)
-        other_has_structural = is_structural_type(other)
-
-        # If both have structural classifiers (and different constructors), do structural check
+        # If both have structural classifiers, do structural check
         if has_structural and other_has_structural:
             # Create substituted structural classifiers
             self_structural = _create_substituted_structural_classifier(self)

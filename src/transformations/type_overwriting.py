@@ -1,5 +1,6 @@
 from src import utils
 from src.ir import ast, type_utils as tu, types as tp
+from src.ir.typescript_ast import TypeAliasDeclaration
 from src.transformations.base import Transformation, change_namespace
 from src.analysis import type_dependency_analysis as tda
 
@@ -21,16 +22,10 @@ class TypeOverwriting(Transformation):
     def get_visitors(self):
         """Override to add language-specific visitors"""
         visitors = super().get_visitors()
-        # TypeScript-specific nodes
-        try:
-            from src.ir import typescript_ast as ts_ast
-            visitors[ts_ast.TypeAliasDeclaration] = self.visit_type_alias_decl
-        except ImportError:
-            pass
+        visitors[TypeAliasDeclaration] = self.visit_type_alias_decl
         return visitors
 
-    def visit_type_alias_decl(self, node):
-        """Handle TypeScript type alias declarations"""
+    def visit_type_alias_decl (self, node):
         return node
 
     def visit_program(self, node):
@@ -111,10 +106,26 @@ class TypeOverwriting(Transformation):
 
         if not is_literal_type and node_type.name in ["Boolean", "String", "BigInteger"]:
             return node
-        ir_type = tu.find_irrelevant_type(node_type, self.types,
-                                          self.bt_factory)
+        
+        ir_type, debug_info = tu.find_irrelevant_type(node_type, self.types, self.bt_factory)
+        
         if ir_type is None:
             return node
+
+        # Record the transformation
+        if hasattr(self.program, 'transformation_tracker'):
+            from src.transformations.tracker import TransformationRecord
+            record = TransformationRecord(
+                transformation_name=self.__class__.__name__,
+                target_node_id=n.node_id,
+                description=f"Replaced type of node '{n.node_id}' with an irrelevant type.",
+                original_type=str(old_type),
+                new_type=str(ir_type),
+                available_types_pool=debug_info.get("available_types_pool"),
+                relevant_types_found=debug_info.get("relevant_types_found"),
+                candidate_pool=debug_info.get("candidate_pool")
+            )
+            self.program.transformation_tracker.record(record)
 
         # Perform the mutation
         if isinstance(n, tda.DeclarationNode):
@@ -136,6 +147,8 @@ class TypeOverwriting(Transformation):
                 for i, t_param in enumerate(type_parameters)
             }
             n.t.type_args[indexes[type_param.t]] = ir_type
+            # Reset the flag so the changed type arguments are visible in output
+            n.t.can_infer_type_args = False
         self.is_transformed = True
         self.error_injected = "{} expected but {} found in node {}".format(
             str(old_type), str(ir_type), n.node_id)
