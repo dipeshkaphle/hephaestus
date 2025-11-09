@@ -910,6 +910,13 @@ class Generator():
         """
         if gen_bottom:
             return ast.BottomConstant(None)
+        # Resolve IndexedAccessType to its actual type before generation
+        # This prevents issues when trying to generate expressions for computed types
+        if expr_type and hasattr(expr_type, '_try_resolve') and expr_type.is_compound():
+            resolved = expr_type._try_resolve()
+            if resolved is not None:
+                expr_type = resolved
+
         find_subtype = (
             expr_type and
             subtype and expr_type != self.bt_factory.get_void_type()

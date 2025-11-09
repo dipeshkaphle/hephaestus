@@ -159,16 +159,53 @@ class TypeScriptBuiltinFactory(bt.BuiltinFactory):
                     object_type, available_types, gen_object.bt_factory
                 )
 
-            # Select a random field name as index
-            field = ut.random.choice(target_class.fields)
-            index_type = StringLiteralType(field.name)
+            # Decide whether to generate single key or union of keys
+            # 50% chance to generate union key if there are 2+ fields
+            use_union_key = len(target_class.fields) >= 2 and ut.random.bool()
 
-            # Cache the resolved type (the field's type) for accurate type checking
-            # If object_type is parameterized, we need to substitute type variables in field type
-            resolved_type = field.field_type
-            if object_type.is_parameterized():
-                type_var_map = object_type.get_type_variable_assignments()
-                resolved_type = tp.substitute_type(resolved_type, type_var_map)
+            if use_union_key:
+                # Generate union of 2-3 field keys: T["field1" | "field2" | ...]
+                num_keys = min(ut.random.integer(2, 4), len(target_class.fields))
+                selected_fields = ut.random.sample(target_class.fields, num_keys)
+
+                # Create union of string literal types
+                index_types = [StringLiteralType(f.name) for f in selected_fields]
+                index_type = UnionType(index_types)
+
+                # Resolve to union of field types
+                resolved_types = []
+                for field in selected_fields:
+                    field_type = field.field_type
+                    if object_type.is_parameterized():
+                        type_var_map = object_type.get_type_variable_assignments()
+                        field_type = tp.substitute_type(field_type, type_var_map)
+                    resolved_types.append(field_type)
+
+                # Deduplicate types
+                seen = set()
+                unique_resolved = []
+                for t in resolved_types:
+                    t_key = (type(t), getattr(t, 'name', None), getattr(t, 'literal', None))
+                    if t_key not in seen:
+                        seen.add(t_key)
+                        unique_resolved.append(t)
+
+                # Create union if multiple types, otherwise use single type
+                if len(unique_resolved) > 1:
+                    resolved_type = UnionType(unique_resolved)
+                else:
+                    resolved_type = unique_resolved[0]
+            else:
+                # Generate single key: T["field"]
+                field = ut.random.choice(target_class.fields)
+                index_type = StringLiteralType(field.name)
+
+                # Cache the resolved type (the field's type) for accurate type checking
+                # If object_type is parameterized, we need to substitute type variables in field type
+                resolved_type = field.field_type
+                if object_type.is_parameterized():
+                    type_var_map = object_type.get_type_variable_assignments()
+                    resolved_type = tp.substitute_type(resolved_type, type_var_map)
 
             return IndexedAccessType(object_type, index_type, resolved_type=resolved_type)
         except:
@@ -611,8 +648,8 @@ class UnionType(TypeScriptBuiltin):
             return {}
 
         # If T1 is a union type, then get all its types.
-        t1_types = (t1.types if t1.is_compound() and
-                     not t1.is_parameterized()
+        # Note: IndexedAccessType is also compound but doesn't have .types
+        t1_types = (t1.types if isinstance(t1, UnionType)
                      else [t1])
 
         if not t1.is_subtype(t2):
@@ -852,6 +889,7 @@ class IndexedAccessType(TypeScriptBuiltin):
         For example:
         - Person["name"] -> string (if Person has a name field of type string)
         - Array<number>[number] -> number
+        - Person["age" | "name"] -> number | string (union of field types)
 
         Returns:
             The resolved type if successful, None otherwise
@@ -869,7 +907,51 @@ class IndexedAccessType(TypeScriptBuiltin):
                 # Return the element type (first type argument of Array<T>)
                 return self.object_type.type_args[0]
 
-        # Case 2: For class/interface types with string literal index
+        # Case 2: T["K1" | "K2" | ...] -> T["K1"] | T["K2"] | ...
+        # When the index is a union of string literals, resolve each and create a union
+        if isinstance(self.index_type, UnionType):
+            resolved_types = []
+            for index_member in self.index_type.types:
+                # Create a new IndexedAccessType for each member of the union
+                member_indexed = IndexedAccessType(
+                    self.object_type,
+                    index_member,
+                    resolved_type=self._resolved_type
+                )
+                # Try to resolve this individual indexed access
+                resolved = member_indexed._try_resolve()
+                if resolved is not None:
+                    resolved_types.append(resolved)
+                else:
+                    # If we can't resolve one of the members, we can't resolve the whole union
+                    return None
+
+            # If we successfully resolved all members, return a union of the results
+            if resolved_types:
+                # Flatten if any resolved type is already a union
+                flattened = []
+                for t in resolved_types:
+                    if isinstance(t, UnionType):
+                        flattened.extend(t.types)
+                    else:
+                        flattened.append(t)
+
+                # Remove duplicates while preserving order
+                seen = set()
+                unique_types = []
+                for t in flattened:
+                    t_key = (type(t), getattr(t, 'name', None), getattr(t, 'literal', None))
+                    if t_key not in seen:
+                        seen.add(t_key)
+                        unique_types.append(t)
+
+                # If only one type remains after deduplication, return it directly
+                if len(unique_types) == 1:
+                    return unique_types[0]
+
+                return UnionType(unique_types)
+
+        # Case 3: For class/interface types with string literal index
         # We cannot fully resolve this without context (class definitions)
         # This would require passing context into this method or caching
         # field type information in the IndexedAccessType itself
