@@ -330,7 +330,7 @@ class TypeScriptTranslator(BaseTranslator):
 
     @append_to
     def visit_null_constant(self, node):
-        self._children_res.append(node.literal)
+        self._children_res.append("({} as {})".format(node.literal,node.literal))
 
     @append_to
     def visit_var_decl(self, node):

@@ -532,10 +532,12 @@ class SymbolType(TypeScriptBuiltin):
         return super().get_name()
 
 
-class NullType(ObjectType):
+class NullType(TypeScriptBuiltin):
     def __init__(self, name="null", primitive=False):
-        super().__init__(name)
-        self.primitive = primitive
+        super().__init__(name, primitive)
+
+    def is_subtype(self, other):
+        return isinstance(other, NullType)
 
     def box_type(self):
         return NullType(self.name)
@@ -544,10 +546,12 @@ class NullType(ObjectType):
         return 'null'
 
 
-class UndefinedType(ObjectType):
+class UndefinedType(TypeScriptBuiltin):
     def __init__(self, name="undefined", primitive=False):
-        super().__init__(name)
-        self.primitive = primitive
+        super().__init__(name, primitive)
+
+    def is_subtype(self, other):
+        return isinstance(other, UndefinedType)
 
     def box_type(self):
         return UndefinedType(self.name)
@@ -556,9 +560,9 @@ class UndefinedType(ObjectType):
         return 'undefined'
 
 
-class AliasType(ObjectType):
+class AliasType(TypeScriptBuiltin):
     def __init__(self, alias, name="AliasType", primitive=False):
-        super().__init__()
+        super().__init__(name, primitive)
         self.alias = alias
         self.name = name
         self.primitive = primitive
