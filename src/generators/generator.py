@@ -1139,6 +1139,9 @@ class Generator():
         initial_depth = self.depth
         self.depth += 1
         objs = self._get_matching_objects(etype, subtype, 'fields')
+        # Defensive: drop any matching objects that lack an attribute
+        # declaration (some code paths may return partial AttrReceiverInfo).
+        objs = [o for o in objs if getattr(o, 'attr_decl', None) is not None]
         if not objs:
             type_f = self._get_matching_class(etype, subtype=subtype,
                                               attr_name='fields')
@@ -1146,10 +1149,27 @@ class Generator():
                 type_f = self._gen_matching_class(
                     etype, 'fields', not_void=True,
                 )
-            receiver = self.generate_expr(type_f.receiver_t, only_leaves)
-            objs.append(gu.AttrReceiverInfo(
-                receiver, None, type_f.attr_decl, None))
-        objs = [(obj.receiver_expr, obj.attr_decl) for obj in objs]
+            # If we still couldn't find or generate a matching class, return
+            # a bottom constant for the expected type instead of crashing
+            # (previously this led to type_f being None and accessing
+            # type_f.attr_decl causing an AttributeError).
+            #if type_f is None:
+               # self.depth = initial_depth
+                #return ast.BottomConstant(etype)
+            if type_f is None or getattr(type_f, 'attr_decl', None) is None:
+                # Nothing usable found; return a bottom constant instead of crashing
+                self.depth = initial_depth
+                return ast.BottomConstant(etype)
+            receiver = None if type_f.receiver_t is None else self.generate_expr(
+                type_f.receiver_t, only_leaves)
+            objs.append(gu.AttrReceiverInfo(receiver, None, type_f.attr_decl, None))
+        # Filter out any entries that lack a valid attribute declaration
+        valid_objs = [obj for obj in objs if getattr(obj, 'attr_decl', None) is not None]
+        if not valid_objs:
+            # Nothing usable found; return a bottom constant instead of crashing
+            self.depth = initial_depth
+            return ast.BottomConstant(etype)
+        objs = [(obj.receiver_expr, obj.attr_decl) for obj in valid_objs]
         receiver, attr = ut.random.choice(objs)
         self.depth = initial_depth
         return ast.FieldAccess(receiver, attr.name)
@@ -1323,8 +1343,12 @@ class Generator():
             ast.ComparisonExpr.VALID_OPERATORS[self.language])
         e1_type = ut.random.choice(valid_types)
         e2_type = ut.random.choice(e2_types[e1_type])
-        e1 = self.generate_expr(e1_type, only_leaves)
-        e2 = self.generate_expr(e2_type, only_leaves)
+    # Use leaf-only generation for comparison operands to avoid
+    # producing nested comparison/boolean expressions that can
+    # yield syntactically confusing constructs like `a < (b > c)`
+    # or `x < (y || z)` which may confuse the TS parser.
+        e1 = self.generate_expr(e1_type, only_leaves=True)
+        e2 = self.generate_expr(e2_type, only_leaves=True)
         self.depth = initial_depth
         if self.language == 'java' and e1_type.name in ('Boolean', 'String'):
             op = ut.random.choice(
@@ -1645,6 +1669,10 @@ class Generator():
             subtype: The returned type could be a subtype of `etype`.
         """
         log(self.logger, "Generating function call of type {}".format(etype))
+        # Save current depth for early-return/error paths before we
+        # possibly rebind `initial_depth` later inside the arg-generation
+        # section.
+        _saved_depth_for_early_return = self.depth
         funcs = self._get_matching_function_declarations(etype, subtype)
         if not funcs:
             msg = "No compatible functions in the current scope for type {}"
@@ -1657,8 +1685,16 @@ class Generator():
                 # Here, we generate a function or a class containing a function
                 # whose return type is 'etype'.
                 type_fun = self._gen_matching_func(etype, not_void=True)
+            # If we still couldn't obtain a matching function/class, bail
+            # out with a bottom constant rather than assuming `type_fun` is
+            # valid (this avoids AttributeError on None.receiver_inst).
+            if type_fun is None:
+                log(self.logger, f"No matching function/class could be generated for {etype}; returning BottomConstant.")
+                # restore the previously saved depth and bail out safely
+                self.depth = _saved_depth_for_early_return
+                return ast.BottomConstant(etype)
             receiver = (
-                None if type_fun.receiver_t is None
+                None if (type_fun is None or type_fun.receiver_t is None )
                 else self.generate_expr(type_fun.receiver_t, only_leaves)
             )
             funcs.append(gu.AttrReceiverInfo(receiver, type_fun.receiver_inst,

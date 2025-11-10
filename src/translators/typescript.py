@@ -23,6 +23,8 @@ class TypeScriptTranslator(BaseTranslator):
         self.context = None
         self._namespace: tuple = ast.GLOBAL_NAMESPACE
         self._nodes_stack = [None]
+        # Track when we are rendering class headers (extends/implements)
+        self._in_class_header = False
 
     def _reset_state(self):
         self._children_res = []
@@ -35,6 +37,7 @@ class TypeScriptTranslator(BaseTranslator):
         self.context = None
         self._namespace = ast.GLOBAL_NAMESPACE
         self._nodes_stack = [None]
+        self._in_class_header = False
 
     def get_visitors(self):
         # Overwriting method of ASTVisitor class
@@ -88,6 +91,20 @@ class TypeScriptTranslator(BaseTranslator):
 
     def get_type_name(self, t, from_union=False):
         t_constructor = getattr(t, 't_constructor', None)
+        # Render keyof T verbatim; parenthesize function/union targets
+        if isinstance(t, tst.KeyofType):
+            target = t.target
+            # Avoid recursive base-type self-references only in class header contexts
+            # (e.g., extends/implements lists). In bodies, keep precise targets.
+            if (self.current_class is not None
+                and self._in_class_header
+                and getattr(target, 'name', None) == self.current_class.name):
+                return "keyof any"  # string | number | symbol
+            inner = self.get_type_name(target, from_union=True)
+            # Ensure unions are parenthesized to bind keyof correctly
+            if getattr(target, 'name', None) == 'UnionType' and not inner.startswith("("):
+                inner = f"({inner})"
+            return f"keyof {inner}"
         if (isinstance(t, tst.NumberLiteralType) or
             isinstance(t, tst.StringLiteralType)):
             return str(t.get_literal())
@@ -184,7 +201,11 @@ class TypeScriptTranslator(BaseTranslator):
         for c in children:
             c.accept(self)
         children_res = self.pop_children_res(children)
+        # Render superclass/interface type in a class header context
+        prev_header_flag = self._in_class_header
+        self._in_class_header = True
         class_type = self.get_type_name(node.class_type)
+        self._in_class_header = prev_header_flag
         super_call = None
 
         if node.args is not None:

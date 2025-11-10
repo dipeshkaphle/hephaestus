@@ -225,9 +225,44 @@ class TypeScriptBuiltinFactory(bt.BuiltinFactory):
             if indexed_type:
                 types.append(indexed_type)
 
+        types.append(self.get_keyof_type(gen_object))
+
         # Filter out any None values that might have slipped through
         return [t for t in types if t is not None]
 
+    def get_keyof_type(self, gen_object):
+        """Generate a `KeyofType` over a randomly selected, non-compound type.
+
+        Notes:
+        - We intentionally avoid native compound types to keep targets simple.
+        - If the selected target isn’t an object/class, `keyof` semantics
+          conservatively fall back to `string` at analysis time.
+        """
+        # Try multiple times to avoid type variables and unresolved targets
+        for _ in range(10):
+            target = gen_object.select_type(exclude_native_compound_types=True)
+            # Skip type variables or types that contain type variables, since
+            # we are not guaranteed to be in a scope where they are declared.
+            if getattr(target, "is_type_var", lambda: False)():
+                continue
+            if getattr(target, "has_type_variables", lambda: False)():
+                continue
+            # Avoid applying `keyof` to primitive builtins (e.g. bigint, number,
+            # string, boolean, symbol). Those are invalid or nonsensical in TS
+            # generation contexts, so skip them here.
+            prim_name = getattr(target, 'get_name', lambda: '')()
+            if (isinstance(target, (NumberType, BigIntegerType, StringType,
+                                   SymbolType, BooleanType)) or
+                    (isinstance(prim_name, str) and prim_name.lower() in
+                     {'number', 'bigint', 'string', 'symbol', 'boolean'})):
+                continue
+            # Avoid null/undefined/void as keyof operands; TS treats those specially (never)
+            # TODO: skip everything except typeclasses
+            if isinstance(target, (NullType, UndefinedType, VoidType)):
+                continue
+            return KeyofType(target)
+        # Fallback to a safe, known target
+        return KeyofType(StringType())
 
     def get_constant_candidates(self, constants):
         """ Updates the constant candidates of the generator
@@ -1049,6 +1084,142 @@ class IndexedAccessType(TypeScriptBuiltin):
 
     def __hash__(self):
         return hash(str(self.name) + str(self.object_type) + str(self.index_type))
+
+
+class KeyofType(TypeScriptBuiltin):
+    """
+    IR type representing the TypeScript `keyof T` operator.
+
+    Notes:
+    - This type is context-free by default. Resolution of concrete members
+      (i.e., the union of string literal keys) should be performed by a
+      resolver function when a Program/Context is available.
+    - To support membership checks like "name" <: keyof T without changing the
+      global is_subtype signature, this type consults an optional cached
+      `members` union set by the resolver and answers via two_way_subtyping.
+    """
+
+    def __init__(self, target, name="KeyofType", primitive=False):
+        super().__init__(name, primitive)
+        self.target = target
+        # Optional cache populated by a resolver: UnionType of StringLiteralType
+        self.members = None
+        # Note: Do not mark StringType as a supertype by default. In TS, `keyof T`
+        # can include number or symbol, so it is not generally a subtype of string.
+
+    def get_name(self):
+        # Keep pretty printing simple here; translators can special-case to
+        # reuse their own type formatting for the target when needed.
+        return f"keyof {self.target.get_name()}"
+
+    @two_way_subtyping
+    def is_subtype(self, other):
+        """Use resolved members' union to answer subtyping when available.
+
+        If `members` is populated (UnionType or StringLiteralType), delegate to
+        that type's existing subtyping rules. Otherwise, fall back to a
+        conservative rule aligned with TS: treat `keyof T` as potentially
+        `string | number | symbol` when unresolved.
+        """
+        # Prefer delegating to the union/literal expansion if present
+        if getattr(self, "members", None) is not None:
+            return self.members.is_subtype(other)
+
+        # Conservative default when not expanded:
+        # keyof T is NOT a subtype of plain string/number/symbol, but it IS
+        # a subtype of the union string | number | symbol. Reflect that here.
+        if isinstance(other, AliasType):
+            other = other.alias
+        if isinstance(other, UnionType):
+            base_candidates = [StringType(), NumberType(), SymbolType()]
+            return all(any(bc.is_subtype(ut) for ut in other.types)
+                       for bc in base_candidates)
+        return False
+
+    def two_way_subtyping(self, other):
+        # If a resolver has populated `members`, delegate membership checks
+        # to the existing UnionType infrastructure when possible.
+        if getattr(self, "members", None) is None:
+            return False
+        if isinstance(self.members, UnionType):
+            return self.members.two_way_subtyping(other)
+        # Single literal member case
+        return other.is_subtype(self.members)
+
+    def has_type_variables(self):
+        return getattr(self.target, "has_type_variables", lambda: False)()
+
+    def substitute_type(self, type_map, cond=lambda t: t.has_type_variables()):
+        # Substitute within the target and clear cached expansion as it's now
+        # potentially stale.
+        new_target = (
+            self.target.substitute_type(type_map, cond)
+            if getattr(self.target, "has_type_variables", lambda: False)()
+            else self.target
+        )
+        new_keyof = KeyofType(new_target, self.name, self.primitive)
+        return new_keyof
+
+    def __eq__(self, other):
+        return isinstance(other, KeyofType) and self.target == other.target
+
+    def __hash__(self):
+        return hash(("KeyofType", self.target))
+
+    # Ergonomic helper: context-aware resolution
+    def resolve(self, program):
+        """Resolve and cache the concrete key members using the given program.
+
+        Returns the resolved members type (UnionType, StringLiteralType, or StringType).
+        """
+        return expand_keyof(self, program)
+
+
+def expand_keyof(keyof_t, program):
+    """
+    Resolve `keyof T` into a concrete union of string literal keys when the
+    target refers to a known class/object with fields in the given program.
+
+    - Populates `keyof_t.members` with a UnionType[StringLiteralType(..)] or
+      a conservative StringType fallback when resolution is not possible.
+    - Returns the resolved members type (UnionType, StringLiteralType, or StringType).
+    """
+    # If already computed, return cached value
+    if getattr(keyof_t, "members", None) is not None:
+        return keyof_t.members
+
+    # Unwrap aliases in the target to get to the referred type.
+    target = getattr(keyof_t, "target", None)
+    if isinstance(target, AliasType):
+        target = target.alias
+
+    # Try to resolve to a class declaration by name (SimpleClassifier or ParameterizedType)
+    type_name = getattr(target, "name", None)
+    try:
+        # Access context and classes from the program
+        classes_dict = program.context.get_classes(ast.GLOBAL_NAMESPACE, only_current=True, glob=False)
+        class_decl = classes_dict.get(type_name)
+        if class_decl is None:
+            # Try global lookup across nested namespaces
+            classes_dict = program.context.get_classes(ast.GLOBAL_NAMESPACE, only_current=False, glob=True)
+            class_decl = classes_dict.get(type_name)
+    except Exception:
+        class_decl = None
+
+    # If we found a class declaration, collect all accessible fields (including inherited)
+    if class_decl is not None:
+        all_classes = program.context.get_classes(ast.GLOBAL_NAMESPACE, only_current=False, glob=True).values()
+        field_names = sorted({f.name for f in class_decl.get_all_fields(all_classes)})
+        if not field_names:
+            keyof_t.members = StringType()  # conservative fallback
+            return keyof_t.members
+        literals = [StringLiteralType(n) for n in field_names]
+        keyof_t.members = (UnionType(literals) if len(literals) > 1 else literals[0])
+        return keyof_t.members
+
+    # Fallback for non-object targets or when we cannot resolve: string
+    keyof_t.members = StringType()
+    return keyof_t.members
 
 
 class UnionTypeFactory(object):
