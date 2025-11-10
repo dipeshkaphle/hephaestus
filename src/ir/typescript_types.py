@@ -159,11 +159,52 @@ class TypeScriptBuiltinFactory(bt.BuiltinFactory):
                     object_type, available_types, gen_object.bt_factory
                 )
 
-            # Decide whether to generate single key or union of keys
-            # 50% chance to generate union key if there are 2+ fields
-            use_union_key = len(target_class.fields) >= 2 and ut.random.bool()
+            # Check if the class has methods (functions)
+            # If it has methods, keyof T will include function types, making T[keyof T] problematic
+            has_methods = (hasattr(target_class, 'functions') and
+                          len(target_class.functions) > 0)
 
-            if use_union_key:
+            # Decide whether to generate single key, union of keys, or keyof
+            # Only generate keyof if the class has no methods (to avoid function types in the union)
+            if has_methods:
+                choice = ut.random.integer(0, 2)  # 0: single key, 1: union key
+            else:
+                choice = ut.random.integer(0, 3)  # 0: single key, 1: union key, 2: keyof
+
+            # For keyof to work well, we need at least 1 field and NO methods
+            # For union key to work well, we need at least 2 fields
+            if choice == 2 and len(target_class.fields) >= 1 and not has_methods:
+                # Generate keyof: T[keyof T]
+                # Safe because this class has no methods, so keyof only returns field names
+                index_type = KeyofType(object_type)
+
+                # Resolve to union of all FIELD types (no methods since has_methods is False)
+                resolved_types = []
+                for field in target_class.fields:
+                    field_type = field.field_type
+                    if object_type.is_parameterized():
+                        type_var_map = object_type.get_type_variable_assignments()
+                        field_type = tp.substitute_type(field_type, type_var_map)
+                    resolved_types.append(field_type)
+
+                # Deduplicate types
+                seen = set()
+                unique_resolved = []
+                for t in resolved_types:
+                    t_key = (type(t), getattr(t, 'name', None), getattr(t, 'literal', None))
+                    if t_key not in seen:
+                        seen.add(t_key)
+                        unique_resolved.append(t)
+
+                # Create union if multiple types, otherwise use single type
+                if len(unique_resolved) > 1:
+                    resolved_type = UnionType(unique_resolved)
+                elif len(unique_resolved) == 1:
+                    resolved_type = unique_resolved[0]
+                else:
+                    # Fallback if no fields (shouldn't happen due to the check above)
+                    resolved_type = None
+            elif choice == 1 and len(target_class.fields) >= 2:
                 # Generate union of 2-3 field keys: T["field1" | "field2" | ...]
                 num_keys = min(ut.random.integer(2, 4), len(target_class.fields))
                 selected_fields = ut.random.sample(target_class.fields, num_keys)
@@ -986,7 +1027,56 @@ class IndexedAccessType(TypeScriptBuiltin):
 
                 return UnionType(unique_types)
 
-        # Case 3: For class/interface types with string literal index
+        # Case 3: T[keyof T] -> union of all field types
+        # When the index is keyof, convert it to union of string literals and use Case 2
+        if isinstance(self.index_type, KeyofType):
+            # Try to extract field names from the object type
+            try:
+                # Get the target type from keyof (usually should match object_type)
+                keyof_target = self.index_type.target
+
+                # Try to find the class/type with fields
+                # This works if object_type is a class type with accessible fields
+                target_for_fields = None
+                if hasattr(keyof_target, 'fields'):
+                    target_for_fields = keyof_target
+                elif hasattr(self.object_type, 'fields'):
+                    target_for_fields = self.object_type
+                # For parameterized types, try to get the constructor
+                elif hasattr(self.object_type, 't_constructor') and hasattr(self.object_type.t_constructor, 'fields'):
+                    target_for_fields = self.object_type.t_constructor
+
+                if target_for_fields and hasattr(target_for_fields, 'fields') and target_for_fields.fields:
+                    # Extract field names only (not methods) for fuzzing purposes
+                    # This ensures T[keyof T] resolves to a union of field types
+                    field_names = [f.name for f in target_for_fields.fields]
+                    string_literals = [StringLiteralType(name) for name in field_names]
+                else:
+                    string_literals = []
+
+                if string_literals:
+
+                    # Create union type of the keys
+                    if len(string_literals) == 1:
+                        keys_union = string_literals[0]
+                    else:
+                        keys_union = UnionType(string_literals)
+
+                    # Create a new IndexedAccessType with the union of keys
+                    # and recursively resolve using Case 2 logic
+                    indexed_with_union = IndexedAccessType(
+                        self.object_type,
+                        keys_union,
+                        resolved_type=self._resolved_type
+                    )
+                    return indexed_with_union._try_resolve()
+            except:
+                pass
+
+            # If we can't extract fields, return None and rely on cached resolved_type
+            return None
+
+        # Case 4: For class/interface types with string literal index
         # We cannot fully resolve this without context (class definitions)
         # This would require passing context into this method or caching
         # field type information in the IndexedAccessType itself
@@ -1343,8 +1433,10 @@ def gen_type_alias_decl(gen,
         as defined in src.ir.typescript_ast.py
 
     """
-    alias_type = (etype if etype else
-                  gen.select_type())
+    # For now, just use normal type selection
+    # TODO: Consider generating T[keyof T] in a way that doesn't cause type errors
+    alias_type = (etype if etype else gen.select_type())
+
     initial_depth = gen.depth
     gen.depth += 1
     gen.depth = initial_depth
