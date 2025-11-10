@@ -9,6 +9,39 @@ import src.utils as ut
 from src.ir.decorators import two_way_subtyping
 
 
+class TypeScriptParameterizedType(tp.ParameterizedType):
+    """
+    TypeScript-specific parameterized types with structural typing support.
+
+    In TypeScript, parameterized structural types (Array, Function, etc.)
+    that extend Object are assignable to empty interfaces due to structural typing.
+
+    Examples:
+        Array<number> <: EmptyInterface  (Array extends Object)
+        Function<T, R> <: EmptyInterface (Function extends Object)
+    """
+
+    def is_subtype(self, other):
+        # First check parametric variance (standard ParameterizedType behavior)
+        if super().is_subtype(other):
+            return True
+
+        # TypeScript structural typing: if constructor is/has ObjectType,
+        # delegate to ObjectType for empty interface checking
+
+        # Case 1: Constructor IS an ObjectType (e.g., ArrayType via multiple inheritance)
+        if isinstance(self.t_constructor, ObjectType):
+            return ObjectType().is_subtype(other)
+
+        # Case 2: Constructor HAS ObjectType in supertypes (e.g., FunctionType)
+        if hasattr(self.t_constructor, 'supertypes'):
+            for st in self.t_constructor.supertypes:
+                if isinstance(st, ObjectType):
+                    return ObjectType().is_subtype(other)
+
+        return False
+
+
 class TypeScriptBuiltinFactory(bt.BuiltinFactory):
     def __init__(self, max_union_types=10, max_types_in_union=4,
                  max_string_literal_types=10, max_num_literal_types=10):
@@ -471,6 +504,14 @@ class NumberType(TypeScriptBuiltin):
             return "number"
         return super().get_name()
 
+    def is_subtype(self, other):
+        """Delegate to ObjectType for structural typing (empty interfaces)."""
+        # Check nominal subtyping first (via parent class which has @two_way_subtyping)
+        if super().is_subtype(other):
+            return True
+        # Delegate to ObjectType which handles empty interfaces
+        return ObjectType().is_subtype(other)
+
 
 class BigIntegerType(TypeScriptBuiltin):
     def __init__(self, name="BigInt", primitive=False):
@@ -489,6 +530,12 @@ class BigIntegerType(TypeScriptBuiltin):
             return "bigint"
         return super().get_name()
 
+    def is_subtype(self, other):
+        """Delegate to ObjectType for structural typing (empty interfaces)."""
+        if super().is_subtype(other):
+            return True
+        return ObjectType().is_subtype(other)
+
 
 class BooleanType(TypeScriptBuiltin):
     def __init__(self, name="Boolean", primitive=False):
@@ -502,6 +549,12 @@ class BooleanType(TypeScriptBuiltin):
         if self.is_primitive:
             return "boolean"
         return super().get_name()
+
+    def is_subtype(self, other):
+        """Delegate to ObjectType for structural typing (empty interfaces)."""
+        if super().is_subtype(other):
+            return True
+        return ObjectType().is_subtype(other)
 
 
 class StringType(TypeScriptBuiltin):
@@ -517,6 +570,12 @@ class StringType(TypeScriptBuiltin):
             return "string"
         return super().get_name()
 
+    def is_subtype(self, other):
+        """Delegate to ObjectType for structural typing (empty interfaces)."""
+        if super().is_subtype(other):
+            return True
+        return ObjectType().is_subtype(other)
+
 
 class SymbolType(TypeScriptBuiltin):
     def __init__(self, name="Symbol", primitive=False):
@@ -530,6 +589,12 @@ class SymbolType(TypeScriptBuiltin):
         if self.is_primitive():
             return "symbol"
         return super().get_name()
+
+    def is_subtype(self, other):
+        """Delegate to ObjectType for structural typing (empty interfaces)."""
+        if super().is_subtype(other):
+            return True
+        return ObjectType().is_subtype(other)
 
 
 class NullType(TypeScriptBuiltin):
@@ -1560,6 +1625,16 @@ class ArrayType(tp.TypeConstructor, ObjectType):
         super().__init__(name, [tp.TypeParameter(
             "T", variance=tp.Covariant)])
 
+    def new(self, type_args):
+        """Return TypeScript-specific ParameterizedType for structural typing support"""
+        type_map = {tp_param: type_args[i]
+                    for i, tp_param in enumerate(self.type_parameters)}
+        old_supertypes = self.supertypes
+        type_con = tp.perform_type_substitution(self, type_map)
+        etype = TypeScriptParameterizedType(type_con, type_args)
+        etype.t_constructor.supertypes = old_supertypes
+        return etype
+
 
 class FunctionType(tp.TypeConstructor):
     def __init__(self, nr_type_parameters: int):
@@ -1575,6 +1650,16 @@ class FunctionType(tp.TypeConstructor):
         self.nr_type_parameters = nr_type_parameters
         super().__init__(name, type_parameters)
         self.supertypes.append(ObjectType())
+
+    def new(self, type_args):
+        """Return TypeScript-specific ParameterizedType for structural typing support"""
+        type_map = {tp_param: type_args[i]
+                    for i, tp_param in enumerate(self.type_parameters)}
+        old_supertypes = self.supertypes
+        type_con = tp.perform_type_substitution(self, type_map)
+        etype = TypeScriptParameterizedType(type_con, type_args)
+        etype.t_constructor.supertypes = old_supertypes
+        return etype
 
 
 # Generator Extension

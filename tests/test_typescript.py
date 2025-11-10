@@ -455,3 +455,179 @@ def test_type_alias_nested_number_literal():
     # And equivalent to the original literal
     assert five_lit.is_subtype(five_alias_alias)
     assert five_alias.is_subtype(five_alias_alias)
+
+
+def test_array_variance_structural():
+    """Tests array type variance (covariance) with structural types."""
+    # In TypeScript, if A is a subtype of B, then A[] is a subtype of B[].
+
+    # Structural types for subtyping
+    # interface B { x: number }
+    # interface A extends B { y: string }
+    b_type = tp.SimpleClassifier(
+        name="B",
+        structural=True,
+        field_signatures=[tp.FieldInfo("x", tst.NumberType())]
+    )
+    a_type = tp.SimpleClassifier(
+        name="A",
+        structural=True,
+        field_signatures=[
+            tp.FieldInfo("x", tst.NumberType()),
+            tp.FieldInfo("y", tst.StringType())
+        ]
+    )
+
+    assert a_type.is_subtype(b_type)
+
+    array_constructor = tst.ArrayType()
+    array_a = array_constructor.new([a_type])
+    array_b = array_constructor.new([b_type])
+
+    # A[] should be a subtype of B[] (covariance)
+    assert array_a.is_subtype(array_b)
+
+    # B[] should NOT be a subtype of A[]
+    assert not array_b.is_subtype(array_a)
+
+
+def test_function_variance_structural():
+    """Tests function type variance with structural types."""
+    # Structural types for subtyping
+    # interface B { x: number }
+    # interface A extends B { y: string }
+    b_type = tp.SimpleClassifier(
+        name="B",
+        structural=True,
+        field_signatures=[tp.FieldInfo("x", tst.NumberType())]
+    )
+    a_type = tp.SimpleClassifier(
+        name="A",
+        structural=True,
+        field_signatures=[
+            tp.FieldInfo("x", tst.NumberType()),
+            tp.FieldInfo("y", tst.StringType())
+        ]
+    )
+
+    assert a_type.is_subtype(b_type)
+
+    # f1: (param: B) => A
+    # f2: (param: A) => B
+
+    # f1 should be a subtype of f2
+    # Parameter: B is a supertype of A (contravariance)
+    # Return: A is a subtype of B (covariance)
+
+    func_constructor = tst.FunctionType(1)
+    f1 = func_constructor.new([b_type, a_type])
+    f2 = func_constructor.new([a_type, b_type])
+
+    assert f1.is_subtype(f2)
+    assert not f2.is_subtype(f1)
+
+
+def test_function_variance_multiple_params_structural():
+    """Tests function type variance with multiple parameters and structural types."""
+    # B = { x: number }
+    # A = { x: number, y: string } -> A <: B
+    b_type = tp.SimpleClassifier("B", structural=True, field_signatures=[tp.FieldInfo("x", tst.NumberType())])
+    a_type = tp.SimpleClassifier("A", structural=True, field_signatures=[tp.FieldInfo("x", tst.NumberType()), tp.FieldInfo("y", tst.StringType())])
+    assert a_type.is_subtype(b_type)
+
+    # D = { z: boolean }
+    # C = { z: boolean, w: any } -> C <: D
+    d_type = tp.SimpleClassifier("D", structural=True, field_signatures=[tp.FieldInfo("z", tst.BooleanType())])
+    c_type = tp.SimpleClassifier("C", structural=True, field_signatures=[tp.FieldInfo("z", tst.BooleanType()), tp.FieldInfo("w", tst.ObjectType())])
+    assert c_type.is_subtype(d_type)
+
+    # f1: (p1: B, p2: D) => A
+    # f2: (p1: A, p2: C) => B
+    # f1 should be a subtype of f2
+    func_constructor = tst.FunctionType(2)
+    f1 = func_constructor.new([b_type, d_type, a_type])
+    f2 = func_constructor.new([a_type, c_type, b_type])
+
+    assert f1.is_subtype(f2)
+    assert not f2.is_subtype(f1)
+
+
+def test_array_variance_with_parameterized_structural_types():
+    """Tests array variance with parameterized structural types."""
+    # interface Box<T> { value: T }
+    t = tp.TypeParameter("T", variance=tp.Covariant)
+    box_constructor = tp.TypeConstructor(
+        "Box",
+        [t],
+        classifier=tp.SimpleClassifier(
+            "Box",
+            structural=True,
+            field_signatures=[tp.FieldInfo("value", t)]
+        )
+    )
+
+    # B = { x: number }
+    # A = { x: number, y: string } -> A <: B
+    b_type = tp.SimpleClassifier("B", structural=True, field_signatures=[tp.FieldInfo("x", tst.NumberType())])
+    a_type = tp.SimpleClassifier("A", structural=True, field_signatures=[tp.FieldInfo("x", tst.NumberType()), tp.FieldInfo("y", tst.StringType())])
+    assert a_type.is_subtype(b_type)
+
+    # Box<A> and Box<B>
+    box_a = box_constructor.new([a_type])
+    box_b = box_constructor.new([b_type])
+
+    # Box<A> should be a subtype of Box<B> because Box is covariant in T
+    assert box_a.is_subtype(box_b)
+    assert not box_b.is_subtype(box_a)
+
+    # Array of Box<A> and Array of Box<B>
+    array_constructor = tst.ArrayType()
+    array_box_a = array_constructor.new([box_a])
+    array_box_b = array_constructor.new([box_b])
+
+    # array_box_a should be a subtype of array_box_b
+    assert array_box_a.is_subtype(array_box_b)
+    assert not array_box_b.is_subtype(array_box_a)
+
+
+def test_array_variance_with_structurally_equivalent_generics():
+    """Tests array variance with structurally equivalent generic types having different type parameter names."""
+    # interface Foo<T> { item: T }
+    t = tp.TypeParameter("T")
+    foo_constructor = tp.TypeConstructor(
+        "Foo",
+        [t],
+        classifier=tp.SimpleClassifier(
+            "Foo",
+            structural=True,
+            field_signatures=[tp.FieldInfo("item", t)]
+        )
+    )
+
+    # interface Bar<U> { item: U }
+    u = tp.TypeParameter("U")
+    bar_constructor = tp.TypeConstructor(
+        "Bar",
+        [u],
+        classifier=tp.SimpleClassifier(
+            "Bar",
+            structural=True,
+            field_signatures=[tp.FieldInfo("item", u)]
+        )
+    )
+
+    foo_string = foo_constructor.new([tst.StringType()])
+    bar_string = bar_constructor.new([tst.StringType()])
+
+    # Foo<string> and Bar<string> should be structurally equivalent
+    assert foo_string.is_subtype(bar_string)
+    assert bar_string.is_subtype(foo_string)
+
+    # Arrays of these types
+    array_constructor = tst.ArrayType()
+    array_foo = array_constructor.new([foo_string])
+    array_bar = array_constructor.new([bar_string])
+
+    # array_foo and array_bar should be subtypes of each other
+    assert array_foo.is_subtype(array_bar)
+    assert array_bar.is_subtype(array_foo)

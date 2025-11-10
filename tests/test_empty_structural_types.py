@@ -6,12 +6,16 @@ Key TypeScript behavior to test:
 2. Empty interfaces are SUPERTYPES of all object types (anything can be assigned to them)
 3. Empty interfaces CANNOT be assigned to types with required members
 4. Multiple empty interfaces are mutual subtypes of each other
+5. Primitive types AND their literal types are assignable to empty interfaces
 """
 import pytest
 from src.ir import types as tp
 from src.ir.typescript_types import (
     ObjectType, ObjectLowercaseType, StringType, NumberType,
-    BooleanType, TypeScriptBuiltinFactory
+    BooleanType, NumberLiteralType, StringLiteralType,
+    BooleanLiteralType, BigIntegerType, SymbolType,
+    ArrayType, FunctionType,
+    TypeScriptBuiltinFactory
 )
 
 
@@ -215,8 +219,8 @@ class TestEmptyStructuralAsSupertype:
 class TestEmptyStructuralVsBuiltinTypes:
     """Test empty structural types vs TypeScript builtin types"""
 
-    def test_string_type_NOT_subtype_of_empty(self):
-        """String <: Empty should be False (String is a builtin, not structural)"""
+    def test_string_type_subtype_of_empty(self):
+        """String <: Empty should be True (TypeScript structural typing)"""
         empty = tp.SimpleClassifier(
             name="Empty",
             structural=True,
@@ -227,10 +231,39 @@ class TestEmptyStructuralVsBuiltinTypes:
 
         string_type = StringType()
 
-        # String has methods (charAt, etc.), but it's a builtin not a structural type
-        # So String <: Empty should be False in our current system
-        # (TypeScript allows it, but we model builtins differently)
-        assert not string_type.is_subtype(empty), "String should NOT be subtype of Empty in our model"
+        # In TypeScript, primitive types (string, number, boolean) are assignable
+        # to empty interfaces because empty interfaces have no structural requirements
+        assert string_type.is_subtype(empty), "String should be subtype of Empty (TS behavior)"
+
+    def test_number_type_subtype_of_empty(self):
+        """Number <: Empty should be True (TypeScript structural typing)"""
+        empty = tp.SimpleClassifier(
+            name="Empty",
+            structural=True,
+            field_signatures=[],
+            method_signatures=[],
+            is_complete=True
+        )
+
+        number_type = NumberType()
+
+        # Primitives are assignable to empty interfaces in TypeScript
+        assert number_type.is_subtype(empty), "Number should be subtype of Empty (TS behavior)"
+
+    def test_boolean_type_subtype_of_empty(self):
+        """Boolean <: Empty should be True (TypeScript structural typing)"""
+        empty = tp.SimpleClassifier(
+            name="Empty",
+            structural=True,
+            field_signatures=[],
+            method_signatures=[],
+            is_complete=True
+        )
+
+        boolean_type = BooleanType()
+
+        # Primitives are assignable to empty interfaces in TypeScript
+        assert boolean_type.is_subtype(empty), "Boolean should be subtype of Empty (TS behavior)"
 
     def test_empty_NOT_subtype_of_string(self):
         """Empty <: String should be False"""
@@ -244,7 +277,7 @@ class TestEmptyStructuralVsBuiltinTypes:
 
         string_type = StringType()
 
-        # Empty doesn't have String's methods
+        # Empty doesn't have String's specific type identity
         assert not empty.is_subtype(string_type), "Empty should NOT be subtype of String"
 
     def test_empty_NOT_subtype_of_number(self):
@@ -259,7 +292,7 @@ class TestEmptyStructuralVsBuiltinTypes:
 
         number_type = NumberType()
 
-        # Empty doesn't have Number's methods
+        # Empty doesn't have Number's specific type identity
         assert not empty.is_subtype(number_type), "Empty should NOT be subtype of Number"
 
     def test_empty_NOT_subtype_of_boolean(self):
@@ -274,7 +307,7 @@ class TestEmptyStructuralVsBuiltinTypes:
 
         boolean_type = BooleanType()
 
-        # Empty doesn't have Boolean's methods
+        # Empty doesn't have Boolean's specific type identity
         assert not empty.is_subtype(boolean_type), "Empty should NOT be subtype of Boolean"
 
 
@@ -457,3 +490,302 @@ class TestEdgeCases:
         )
 
         assert empty.is_subtype(empty), "Empty should be subtype of itself"
+
+
+class TestLiteralTypesVsEmptyStructural:
+    """Test that literal types are assignable to empty interfaces"""
+
+    def test_number_literal_subtype_of_empty(self):
+        """NumberLiteral(42) <: Empty should be True"""
+        empty = tp.SimpleClassifier(
+            name="Empty",
+            structural=True,
+            field_signatures=[],
+            method_signatures=[],
+            is_complete=True
+        )
+
+        num_lit = NumberLiteralType(42)
+
+        # Literal types should be assignable to empty interfaces
+        assert num_lit.is_subtype(empty), \
+            "NumberLiteralType should be subtype of Empty"
+
+    def test_string_literal_subtype_of_empty(self):
+        """StringLiteral("foo") <: Empty should be True"""
+        empty = tp.SimpleClassifier(
+            name="Empty",
+            structural=True,
+            field_signatures=[],
+            method_signatures=[],
+            is_complete=True
+        )
+
+        str_lit = StringLiteralType("foo")
+
+        assert str_lit.is_subtype(empty), \
+            "StringLiteralType should be subtype of Empty"
+
+    def test_boolean_literal_subtype_of_empty(self):
+        """BooleanLiteral(true) <: Empty should be True"""
+        empty = tp.SimpleClassifier(
+            name="Empty",
+            structural=True,
+            field_signatures=[],
+            method_signatures=[],
+            is_complete=True
+        )
+
+        bool_lit = BooleanLiteralType(True)
+
+        assert bool_lit.is_subtype(empty), \
+            "BooleanLiteralType should be subtype of Empty"
+
+    def test_bigint_subtype_of_empty(self):
+        """BigInt <: Empty should be True"""
+        empty = tp.SimpleClassifier(
+            name="Empty",
+            structural=True,
+            field_signatures=[],
+            method_signatures=[],
+            is_complete=True
+        )
+
+        bigint = BigIntegerType()
+
+        assert bigint.is_subtype(empty), \
+            "BigIntegerType should be subtype of Empty"
+
+    def test_symbol_subtype_of_empty(self):
+        """Symbol <: Empty should be True"""
+        empty = tp.SimpleClassifier(
+            name="Empty",
+            structural=True,
+            field_signatures=[],
+            method_signatures=[],
+            is_complete=True
+        )
+
+        symbol = SymbolType()
+
+        assert symbol.is_subtype(empty), \
+            "SymbolType should be subtype of Empty"
+
+
+class TestParameterizedTypesVsEmptyStructural:
+    """Test that parameterized types (Array, Function) are assignable to empty interfaces"""
+
+    def test_array_number_subtype_of_empty(self):
+        """Array<number> <: Empty should be True"""
+        empty = tp.SimpleClassifier(
+            name="Empty",
+            structural=True,
+            field_signatures=[],
+            method_signatures=[],
+            is_complete=True
+        )
+
+        array_constructor = ArrayType()
+        array_of_number = array_constructor.new([NumberType()])
+
+        assert array_of_number.is_subtype(empty), \
+            "Array<number> should be subtype of Empty"
+
+    def test_array_string_subtype_of_empty(self):
+        """Array<string> <: Empty should be True"""
+        empty = tp.SimpleClassifier(
+            name="Empty",
+            structural=True,
+            field_signatures=[],
+            method_signatures=[],
+            is_complete=True
+        )
+
+        array_constructor = ArrayType()
+        array_of_string = array_constructor.new([StringType()])
+
+        assert array_of_string.is_subtype(empty), \
+            "Array<string> should be subtype of Empty"
+
+    def test_array_subtype_of_object(self):
+        """Array<T> <: Object should be True"""
+        array_constructor = ArrayType()
+        array_of_number = array_constructor.new([NumberType()])
+        obj = ObjectType()
+
+        assert array_of_number.is_subtype(obj), \
+            "Array<number> should be subtype of Object"
+
+    def test_function_subtype_of_empty(self):
+        """Function<Args, Return> <: Empty should be True"""
+        empty = tp.SimpleClassifier(
+            name="Empty",
+            structural=True,
+            field_signatures=[],
+            method_signatures=[],
+            is_complete=True
+        )
+
+        # Function with 1 argument: (String) => Number
+        # FunctionType(1) creates type params [A1, R]
+        func_constructor = FunctionType(1)
+        func_type = func_constructor.new([StringType(), NumberType()])
+
+        assert func_type.is_subtype(empty), \
+            "Function<String, Number> should be subtype of Empty"
+
+    def test_function_subtype_of_object(self):
+        """Function<Args, Return> <: Object should be True"""
+        func_constructor = FunctionType(2)
+        func_type = func_constructor.new([StringType(), NumberType(), BooleanType()])
+        obj = ObjectType()
+
+        assert func_type.is_subtype(obj), \
+            "Function should be subtype of Object"
+
+    def test_nested_array_subtype_of_empty(self):
+        """Array<Array<number>> <: Empty should be True"""
+        empty = tp.SimpleClassifier(
+            name="Empty",
+            structural=True,
+            field_signatures=[],
+            method_signatures=[],
+            is_complete=True
+        )
+
+        array_constructor = ArrayType()
+        inner_array = array_constructor.new([NumberType()])
+        nested_array = array_constructor.new([inner_array])
+
+        assert nested_array.is_subtype(empty), \
+            "Array<Array<number>> should be subtype of Empty"
+
+
+class TestVarianceWithStructuralTypes:
+    """Test that variance rules work correctly with structural types"""
+
+    def test_array_covariance_with_empty(self):
+        """Array<number> <: Array<Empty> via covariance"""
+        empty = tp.SimpleClassifier(
+            name="Empty",
+            structural=True,
+            field_signatures=[],
+            method_signatures=[],
+            is_complete=True
+        )
+
+        array_constructor = ArrayType()
+
+        # Array<number>
+        array_of_number = array_constructor.new([NumberType()])
+
+        # Array<Empty> - represented as parameterized type with Empty
+        array_of_empty = array_constructor.new([empty])
+
+        # Since number <: Empty, and Array is covariant,
+        # Array<number> <: Array<Empty>
+        assert array_of_number.is_subtype(array_of_empty), \
+            "Array<number> should be subtype of Array<Empty> via covariance"
+
+    def test_nested_array_covariance(self):
+        """Array<Array<number>> <: Array<Array<Empty>> via double covariance"""
+        empty = tp.SimpleClassifier(
+            name="Empty",
+            structural=True,
+            field_signatures=[],
+            method_signatures=[],
+            is_complete=True
+        )
+
+        array_constructor = ArrayType()
+
+        # Array<Array<number>>
+        inner_number = array_constructor.new([NumberType()])
+        nested_number = array_constructor.new([inner_number])
+
+        # Array<Array<Empty>>
+        inner_empty = array_constructor.new([empty])
+        nested_empty = array_constructor.new([inner_empty])
+
+        # Double covariance: Array<Array<number>> <: Array<Array<Empty>>
+        assert nested_number.is_subtype(nested_empty), \
+            "Array<Array<number>> should be subtype of Array<Array<Empty>>"
+
+    def test_structural_type_with_array_field(self):
+        """Structural type with Array<number> field accepts Array<NumberLiteral>"""
+        # Interface with array field
+        interface_with_array = tp.SimpleClassifier(
+            name="HasArrayField",
+            structural=True,
+            field_signatures=[
+                tp.FieldInfo("arr", ArrayType().new([NumberType()]))
+            ],
+            method_signatures=[],
+            is_complete=True
+        )
+
+        # Object with Array<NumberLiteral(42)>
+        obj_with_literal_array = tp.SimpleClassifier(
+            name="ObjWithLiteralArray",
+            structural=True,
+            field_signatures=[
+                tp.FieldInfo("arr", ArrayType().new([NumberLiteralType(42)]))
+            ],
+            method_signatures=[],
+            is_complete=True
+        )
+
+        # NumberLiteral(42) <: Number, and Array is covariant,
+        # so Array<NumberLiteral(42)> <: Array<Number>
+        # Therefore obj should be subtype of interface
+        assert obj_with_literal_array.is_subtype(interface_with_array), \
+            "Object with Array<NumberLiteral> should satisfy interface requiring Array<Number>"
+
+    def test_array_of_empty_accepts_array_of_primitives(self):
+        """Array<Empty> accepts Array<number>, Array<string>, etc."""
+        empty = tp.SimpleClassifier(
+            name="Empty",
+            structural=True,
+            field_signatures=[],
+            method_signatures=[],
+            is_complete=True
+        )
+
+        array_constructor = ArrayType()
+        array_of_empty = array_constructor.new([empty])
+
+        # All these should be subtypes via covariance
+        array_of_number = array_constructor.new([NumberType()])
+        array_of_string = array_constructor.new([StringType()])
+        array_of_boolean = array_constructor.new([BooleanType()])
+
+        assert array_of_number.is_subtype(array_of_empty), \
+            "Array<number> should be subtype of Array<Empty>"
+        assert array_of_string.is_subtype(array_of_empty), \
+            "Array<string> should be subtype of Array<Empty>"
+        assert array_of_boolean.is_subtype(array_of_empty), \
+            "Array<boolean> should be subtype of Array<Empty>"
+
+    def test_function_covariance_in_return_with_empty(self):
+        """Function returning number can be assigned to function returning Empty"""
+        empty = tp.SimpleClassifier(
+            name="Empty",
+            structural=True,
+            field_signatures=[],
+            method_signatures=[],
+            is_complete=True
+        )
+
+        # Function1<Arg, Return> has 2 type params: [A1 (contravariant), R (covariant)]
+        func_constructor = FunctionType(1)
+
+        # () => number (using Empty as dummy arg type for simplicity)
+        func_returns_number = func_constructor.new([empty, NumberType()])
+
+        # () => Empty
+        func_returns_empty = func_constructor.new([empty, empty])
+
+        # Since number <: Empty, and return is covariant,
+        # (() => number) <: (() => Empty)
+        assert func_returns_number.is_subtype(func_returns_empty), \
+            "Function returning number should be subtype of function returning Empty"
