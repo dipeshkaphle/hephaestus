@@ -1,37 +1,15 @@
 # pylint: disable=protected-access,dangerous-default-value
-import ctypes
-import inspect
-import sys
-import threading
 import time
+import threading
+import sys
 
 from src.ir.visitors import DefaultVisitorUpdate
 
 
-class TimeoutError(Exception):
-    pass
-
-
-# https://stackoverflow.com/questions/323972/is-there-any-way-to-kill-a-thread
-def _async_raise(tid, exctype):
-    """raises the exception, exctype, in the thread with id tid"""
-    if not inspect.isclass(exctype):
-        raise TypeError("Only types can be raised (not instances)")
-    res = ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(tid), ctypes.py_object(exctype))
-    if res == 0:
-        raise ValueError("invalid thread id")
-    elif res != 1:
-        # "if it returns a number greater than one, you're in trouble,
-        # and you should call it again with exc=NULL to revert the effect"
-        ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(tid), 0)
-        raise SystemError("PyThreadState_SetAsyncExc failed")
-
-
-def timeout_function(log, entity, timeouted, thread_to_kill):
+def timeout_function(log, entity, timeouted):
     log("{}: took too long (timeout)".format(entity))
-    sys.stderr.flush()  # Python 3 stderr is likely buffered.
+    sys.stderr.flush() # Python 3 stderr is likely buffered.
     timeouted[0] = True
-    _async_raise(thread_to_kill.ident, TimeoutError)
 
 
 def visitor_logging_and_timeout_with_args(*args):
@@ -46,17 +24,12 @@ def visitor_logging_and_timeout_with_args(*args):
 
             timeouted = [False]
             start = time.time()
-            new_node = node
-            main_thread = threading.current_thread()
-            timer = threading.Timer(
-                self.timeout, timeout_function,
-                args=[self.log, entity, timeouted, main_thread])
             try:
+                timer = threading.Timer(
+                    self.timeout, timeout_function,
+                    args=[self.log, entity, timeouted])
                 timer.start()
                 new_node = visitor_func(self, node)
-            except TimeoutError:
-                self.log(f"{entity}: Timed out!")
-                # new_node is already node
             finally:
                 timer.cancel()
             end = time.time()
@@ -65,9 +38,7 @@ def visitor_logging_and_timeout_with_args(*args):
             self.log("{}: {} elapsed time".format(entity, str(end - start)))
             self.log("{}: End".format(entity))
             return new_node
-
         return wrapped_visitor
-
     return wrap_visitor_func
 
 
@@ -78,7 +49,6 @@ def change_namespace(visit):
         new_node = visit(self, node)
         self._namespace = initial_namespace
         return new_node
-
     return inner
 
 
@@ -89,7 +59,6 @@ def change_depth(visit):
         new_node = visit(self, node)
         self.depth = initial_depth
         return new_node
-
     return inner
 
 
