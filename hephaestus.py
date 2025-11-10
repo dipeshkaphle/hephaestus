@@ -10,6 +10,8 @@ import subprocess as sp
 import shutil
 import time
 import traceback
+import signal
+import threading
 from collections import namedtuple, OrderedDict
 
 from src.args import args as cli_args, validate_args, pre_process_args
@@ -64,6 +66,17 @@ ProgramRes = namedtuple("ProgramRes", ['failed', 'stats'])
 
 
 # ============= util functions =======================
+
+def kill_process(pid):
+    """Send SIGTERM to a process to gracefully kill it."""
+    # This function runs in a timer thread in the worker process.
+    # It will kill its own parent process.
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        # Process already finished, which is fine.
+        pass
+
 
 def print_msg():
     sys.stdout.write('\033[2K\033[1G')
@@ -335,11 +348,21 @@ def gen_program_mul(pid, dirname, packages):
     global STOP_COND
     if STOP_COND:
         return
+
+    # Set up a timer to kill this worker process if it takes too long.
+    # This is a safeguard against transformations getting stuck.
+    timer = threading.Timer(cli_args.timeout, kill_process, args=[os.getpid()])
+    timer.start()
+
     try:
         utils.random.r.seed()
-        return gen_program(pid, dirname, packages)
+        result = gen_program(pid, dirname, packages)
+        return result
     except KeyboardInterrupt:
         STOP_COND = True
+    finally:
+        # Important: cancel the timer if the function completes in time.
+        timer.cancel()
 
 
 def _report_failed(pid, tid, compiler, oracle):
@@ -545,10 +568,26 @@ def run_parallel():
             update_stats(res, batch)
 
         try:
-            res = [r.get() for r in res]
+            processed_res = []
+            for r in res:
+                try:
+                    # Wait for the result from the worker process.
+                    processed_res.append(r.get())
+                except Exception as e:
+                    # A worker process likely failed, was terminated by the timeout,
+                    # or encountered a critical error.
+                    stats = {
+                        'transformations': [],
+                        'error': f'Worker process failed or timed out: {e}',
+                        'program': None
+                    }
+                    processed_res.append(ProgramRes(True, stats))
+            
             oracles = OrderedDict()
-            for i, r in enumerate(res):
-                oracles[start_index + i] = r
+            for i, r in enumerate(processed_res):
+                if r is not None:
+                    oracles[start_index + i] = r
+
             if cli_args.dry_run:
                 return update({})
             pool.apply_async(check_oracle_mul, args=(testdir, oracles),

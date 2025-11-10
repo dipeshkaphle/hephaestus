@@ -1131,11 +1131,14 @@ class ParameterizedType(SimpleClassifier):
         # If other is parameterized with the SAME constructor
         if other.is_parameterized() and hasattr(other, 't_constructor'):
             if self.t_constructor == other.t_constructor:
-                # For structural types, always check structural compatibility
-                # (fields and methods after type substitution), not just variance
                 if has_structural and other_has_structural:
-                    # Will do structural check below, fall through
-                    pass
+                    # Create substituted structural classifiers
+                    self_structural = _create_substituted_structural_classifier(self)
+                    other_structural = _create_substituted_structural_classifier(other)
+                    if self_structural and other_structural:
+                        # Delegate to SimpleClassifier.is_subtype()
+                        return self_structural.is_subtype(other_structural)
+                    return False # Should not happen
                 else:
                     # Same type constructor (non-structural): use variance checking on type arguments
                     for tp, sarg, targ in zip(self.t_constructor.type_parameters,
