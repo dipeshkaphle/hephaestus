@@ -877,7 +877,7 @@ class UnionType(TypeScriptBuiltin):
         return all(t.is_subtype(other) for t in self.types)
 
     def two_way_subtyping(self, other):
-        return other in set(self.types)
+        return any(other.is_subtype(t) for t in self.types)
 
     def substitute_type(self, type_map,
                         cond=lambda t: t.has_type_variables()):

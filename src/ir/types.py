@@ -886,24 +886,37 @@ def _create_substituted_structural_classifier(parameterized_type):
     # Get type substitution map
     type_map = parameterized_type.get_type_variable_assignments()
 
+    # Get all fields (including inherited) from the classifier
+    all_fields = classifier._get_all_fields()
+
     # Substitute types in field signatures
+    # IMPORTANT: Use cond=lambda t: False to force substitution even when
+    # replacing one TypeParameter with another (e.g., Q -> E)
     substituted_fields = []
-    for field in classifier.field_signatures:
-        substituted_type = field.field_type.substitute_type(
-            type_map, cond=lambda t: False)
-        substituted_fields.append(FieldInfo(field.name, substituted_type))
+    for name, field in all_fields.items():
+        # Handle None field_type (defensive check)
+        if field.field_type:
+            substituted_type = field.field_type.substitute_type(
+                type_map, cond=lambda t: False)
+        else:
+            substituted_type = None
+        substituted_fields.append(FieldInfo(name, substituted_type))
+
+    # Get all methods (including inherited) from the classifier
+    all_methods = classifier._get_all_methods()
 
     # Substitute types in method signatures
     substituted_methods = []
-    for method in classifier.method_signatures:
+    for name, method in all_methods.items():
         substituted_params = [
-            param.substitute_type(type_map, cond=lambda t: False)
+            param.substitute_type(type_map, cond=lambda t: False) if param else None
             for param in method.param_types
         ]
-        substituted_return = method.return_type.substitute_type(
-            type_map, cond=lambda t: False)
+        # Handle None return type (e.g., constructors, void methods)
+        substituted_return = (method.return_type.substitute_type(type_map, cond=lambda t: False)
+                             if method.return_type else None)
         substituted_methods.append(
-            MethodInfo(method.name, substituted_params, substituted_return))
+            MethodInfo(name, substituted_params, substituted_return))
 
     # Create new SimpleClassifier with substituted signatures
     return SimpleClassifier(
@@ -976,8 +989,12 @@ class ParameterizedType(SimpleClassifier):
             all_fields = self.t_constructor.classifier._get_all_fields()
             substituted_fields = {}
             for name, field in all_fields.items():
-                substituted_type = field.field_type.substitute_type(
-                    type_map, lambda t: t.has_type_variables())
+                # Handle None field_type (defensive check)
+                if field.field_type:
+                    substituted_type = field.field_type.substitute_type(
+                        type_map, lambda t: t.has_type_variables())
+                else:
+                    substituted_type = None
                 substituted_fields[name] = FieldInfo(name, substituted_type)
             return substituted_fields
         return super()._get_all_fields()
@@ -995,11 +1012,13 @@ class ParameterizedType(SimpleClassifier):
             substituted_methods = {}
             for name, method_info in all_methods.items():
                 substituted_params = [
-                    p.substitute_type(type_map, lambda t: t.has_type_variables())
+                    p.substitute_type(type_map, lambda t: t.has_type_variables()) if p else None
                     for p in method_info.param_types
                 ]
-                substituted_return = method_info.return_type.substitute_type(
+                # Handle None return type (e.g., constructors, void methods)
+                substituted_return = (method_info.return_type.substitute_type(
                     type_map, lambda t: t.has_type_variables())
+                    if method_info.return_type else None)
                 substituted_methods[name] = MethodInfo(name, substituted_params, substituted_return)
             return substituted_methods
         return super()._get_all_methods()

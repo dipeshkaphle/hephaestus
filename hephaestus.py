@@ -349,20 +349,12 @@ def gen_program_mul(pid, dirname, packages):
     if STOP_COND:
         return
 
-    # Set up a timer to kill this worker process if it takes too long.
-    # This is a safeguard against transformations getting stuck.
-    timer = threading.Timer(cli_args.timeout, kill_process, args=[os.getpid()])
-    timer.start()
-
     try:
         utils.random.r.seed()
         result = gen_program(pid, dirname, packages)
         return result
     except KeyboardInterrupt:
         STOP_COND = True
-    finally:
-        # Important: cancel the timer if the function completes in time.
-        timer.cancel()
 
 
 def _report_failed(pid, tid, compiler, oracle):
@@ -571,14 +563,22 @@ def run_parallel():
             processed_res = []
             for r in res:
                 try:
-                    # Wait for the result from the worker process.
-                    processed_res.append(r.get())
-                except Exception as e:
-                    # A worker process likely failed, was terminated by the timeout,
-                    # or encountered a critical error.
+                    # Wait for the result from the worker process with timeout.
+                    # This prevents hanging forever if program generation gets stuck.
+                    processed_res.append(r.get(timeout=cli_args.timeout))
+                except mp.TimeoutError:
+                    # Worker process exceeded timeout - it's still running but we move on
                     stats = {
                         'transformations': [],
-                        'error': f'Worker process failed or timed out: {e}',
+                        'error': f'Worker process timed out after {cli_args.timeout} seconds',
+                        'program': None
+                    }
+                    processed_res.append(ProgramRes(True, stats))
+                except Exception as e:
+                    # A worker process likely failed or encountered a critical error.
+                    stats = {
+                        'transformations': [],
+                        'error': f'Worker process failed: {e}',
                         'program': None
                     }
                     processed_res.append(ProgramRes(True, stats))

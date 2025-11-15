@@ -277,7 +277,7 @@ class Generator():
                     ut.random.bool(prob=0.25) or
                     self.language == 'java' or
                     self.language == 'groovy' and is_interface or
-                    self.language == 'typescript' and is_interface
+                    self.language == 'typescript' 
                 )
                 else self._gen_func_params_with_default()
             )
@@ -936,6 +936,7 @@ class Generator():
                 msg = "Found subtype of {}: {}".format(old_type, expr_type)
                 log(self.logger, msg)
                 # Trace subtype selection
+                self._trace_subtype_check('generate_expr', expr_type, old_type, True);
                 trace_info(self, 'generate_expr', {
                     'decision': 'subtype_selected',
                     'original_type': str(old_type),
@@ -1397,6 +1398,8 @@ class Generator():
                     tmp_t
                 )
                 # Trace subtype selection
+                self._trace_subtype_check('gen_conditional',true_type, etype, True);
+                self._trace_subtype_check('gen_conditional',false_type, etype, True);
                 trace_info(self, 'gen_conditional', {
                     'decision': 'subtype_selected',
                     'original_type': str(etype),
@@ -1496,6 +1499,9 @@ class Generator():
         })
 
         subtype = ut.random.choice(subtypes)
+
+        self._trace_subtype_check('gen_is_expr', subtype, var_type, True )
+
         initial_decls = _get_extra_decls(self.namespace)
         prev_namespace = self.namespace
         self.namespace += ('true_block',)
@@ -1986,6 +1992,7 @@ class Generator():
             [s for s in subclasses if s.name == etype.name] or subclasses)
         # Trace final subclass selection
         if subtype and subclasses:
+            self._trace_subtype_check('_get_subclass', selected.get_type(), etype, True)
             trace_info(self, '_get_subclass', {
                 'decision': 'subtype_selected',
                 'target_type': str(etype),

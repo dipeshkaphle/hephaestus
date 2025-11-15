@@ -1111,6 +1111,12 @@ def unify_types(t1: tp.Type, t2: tp.Type, factory,
       class A<T>
       class B : A<String>()
     """
+    # Check for None types - this can happen if field_type or inferred_type is None
+    if t1 is None or t2 is None:
+        # Return empty dict to indicate unification failure
+        # This prevents AttributeError when accessing .name or other attributes
+        return {}
+
     # Defensive checks for is_compound() method availability
     # Use try-except to handle cases where is_compound might be unbound method
     try:

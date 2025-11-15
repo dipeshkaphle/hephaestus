@@ -97,6 +97,30 @@ class TypeConstructorInstantiationCallNode(NamedTuple):
         return self.parent_id + "/" + self.t.name
 
     def is_omittable(self):
+        """
+        Type constructor instantiation is omittable (type arguments can be erased)
+        ONLY if none of the type arguments are type parameters from enclosing scopes.
+
+        Example that should NOT be erasable:
+          class Foo<M> {
+            method() {
+              return new Bar<M>()  // M is from enclosing class scope
+            }
+          }
+
+        If we erase <M>, TypeScript/Java/Kotlin cannot infer M from the enclosing
+        scope and will default to the constraint (e.g., Object), breaking the type system.
+
+        This conservative rule works across all languages (TypeScript, Java, Kotlin, Groovy).
+        """
+        # Check if any type argument is a TypeParameter (from enclosing scope)
+        for type_arg in self.t.type_args:
+            if type_arg.is_type_var():
+                # This is a type parameter from an enclosing scope
+                # Erasing it would cause the compiler to infer the wrong type
+                return False
+
+        # All type arguments are concrete types, safe to erase
         return True
 
     def get_type(self):
