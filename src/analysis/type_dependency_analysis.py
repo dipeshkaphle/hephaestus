@@ -728,9 +728,11 @@ class TypeDependencyAnalysis(DefaultVisitor):
         # We create a "virtual" variable declaration representing the
         # return value of the function.
         parent_id, _ = self._get_node_id()
+        ret_expr_type = ret_expr.get_type() if hasattr(ret_expr, 'get_type') else self._func_non_void_block_type
         ret_decl = ast.VariableDeclaration(
             RET, ret_expr, is_final=True,
-            var_type=self._func_non_void_block_type)
+            var_type=self._func_non_void_block_type,
+            inferred_type=ret_expr_type)
         self._handle_declaration(parent_id, ret_decl, ret_expr,
                                  'var_type')
 

@@ -146,7 +146,32 @@ class TypeOverwriting(Transformation):
                 t_param: i
                 for i, t_param in enumerate(type_parameters)
             }
-            n.t.type_args[indexes[type_param.t]] = ir_type
+
+            # Validate mutation before applying for structural typing
+            # Check if mutating this type argument actually creates an inequivalent type
+            # This prevents ineffective mutations when type parameters are phantom (unused)
+            param_index = indexes[type_param.t]
+            original_type_args = list(n.t.type_args)
+            candidate_type_args = list(n.t.type_args)
+            candidate_type_args[param_index] = ir_type
+
+            try:
+                # Construct both types to compare
+                original_type = n.t.t_constructor.new(original_type_args)
+                candidate_type = n.t.t_constructor.new(candidate_type_args)
+
+                # Check if they have a subtyping relationship (structural equivalence)
+                if candidate_type.is_subtype(original_type) or original_type.is_subtype(candidate_type):
+                    # Types are structurally equivalent - mutation is ineffective
+                    # This happens with phantom type parameters in structural typing
+                    return node
+            except (AttributeError, NotImplementedError):
+                # Some types may not implement is_subtype properly
+                # In this case, proceed with mutation (best effort)
+                pass
+
+            # Apply the mutation (only if validation passed)
+            n.t.type_args[param_index] = ir_type
             # Reset the flag so the changed type arguments are visible in output
             n.t.can_infer_type_args = False
         self.is_transformed = True

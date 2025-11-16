@@ -823,15 +823,20 @@ class Generator():
             var_type
 
         # Determine the actual inferred type based on the expression
-        # If the expression is a Variable reference, look up its type
-        actual_inferred_type = var_type
-        if isinstance(expr, ast.Variable):
-            # Look up the variable's type from context (searches parent namespaces)
+        # This is what TypeScript would infer from the initializer
+        if hasattr(expr, 'get_type'):
+            actual_inferred_type = expr.get_type()
+        elif isinstance(expr, ast.Variable):
+            # Look up the variable's type from context
             from src.ir.context import get_decl
             lookup_result = get_decl(self.context, self.namespace, expr.name)
             if lookup_result:
                 _, var_decl_ref = lookup_result
                 actual_inferred_type = var_decl_ref.get_type()
+            else:
+                actual_inferred_type = var_type
+        else:
+            actual_inferred_type = var_type
 
         var_decl = ast.VariableDeclaration(
             ut.random.identifier('lower'),
@@ -1514,7 +1519,8 @@ class Generator():
             ast.VariableDeclaration(
                 var.name,
                 ast.BottomConstant(var.get_type()),
-                var_type=subtype))
+                var_type=subtype,
+                inferred_type=subtype))
         true_expr = self.generate_expr(expr_type)
         # We pop the variable from context. Because it's no longer used.
         self.context.remove_var(self.namespace, var.name)

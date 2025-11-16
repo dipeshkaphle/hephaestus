@@ -55,6 +55,12 @@ class TypeErasure(Transformation):
         type_graph.update(self.global_type_graph)
         omittable_nodes = [n for n in type_graph.keys()
                            if n.is_omittable()]
+        # Filter out global variable declarations - don't erase them
+        omittable_nodes = [
+            n for n in omittable_nodes
+            if not (isinstance(n, tda.DeclarationNode) and
+                    n.parent_id == '/'.join(ast.GLOBAL_NAMESPACE))
+        ]
         omittable_nodes = [
             n
             for n in omittable_nodes
