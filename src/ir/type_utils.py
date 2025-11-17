@@ -383,6 +383,11 @@ def find_irrelevant_type(etype: tp.Type, types: List[tp.Type],
     subtypes = find_subtypes(etype, types, include_self=True,
                              concrete_only=True)
     relevant_types = supertypes + subtypes
+
+    # Ensure etype itself is always in relevant_types (even if not in supertypes/subtypes)
+    # This prevents returning the same type as irrelevant
+    if etype not in relevant_types:
+        relevant_types.append(etype)
     # If any type included in the list of relevant types is parameterized,
     # then create a map with their type arguments.
     type_args_map = {

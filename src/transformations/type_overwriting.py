@@ -108,9 +108,46 @@ class TypeOverwriting(Transformation):
             return node
         
         ir_type, debug_info = tu.find_irrelevant_type(node_type, self.types, self.bt_factory)
-        
+
         if ir_type is None:
             return node
+
+        # Additional check for VariableDeclarations: ensure the replacement type
+        # is also irrelevant to the actual expression's type, not just the declared type.
+        # This prevents replacing with supertypes of the actual value.
+        # Example: const x: string | Function = "literal"
+        # Should not replace with String (supertype of "literal")
+        if isinstance(n, tda.DeclarationNode) and isinstance(n.decl, ast.VariableDeclaration):
+            expr = n.decl.expr
+            # Get the expression's type if it has one
+            expr_type = None
+            if hasattr(expr, 'inferred_type') and expr.inferred_type:
+                expr_type = expr.inferred_type
+            elif hasattr(expr, 'get_type'):
+                try:
+                    expr_type = expr.get_type()
+                except (AttributeError, NotImplementedError):
+                    pass
+            elif isinstance(expr, ast.Variable):
+                # For variable references, look up the variable's type in the context
+                try:
+                    var_decl = self.program.context.get_var(n.decl.namespace, expr.name)
+                    if var_decl:
+                        expr_type = var_decl.get_type()
+                except (AttributeError, KeyError):
+                    pass
+
+            # If we have an expression type different from the declared type,
+            # verify the replacement is also irrelevant to it
+            if expr_type and expr_type != node_type:
+                try:
+                    # Check if ir_type has a subtyping relationship with expr_type
+                    if ir_type.is_subtype(expr_type) or expr_type.is_subtype(ir_type):
+                        # ir_type is relevant to expr_type - skip this transformation
+                        return node
+                except (AttributeError, NotImplementedError):
+                    # If we can't check, be conservative and skip
+                    return node
 
         # Record the transformation
         if hasattr(self.program, 'transformation_tracker'):

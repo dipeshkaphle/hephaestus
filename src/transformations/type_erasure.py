@@ -55,12 +55,34 @@ class TypeErasure(Transformation):
         type_graph.update(self.global_type_graph)
         omittable_nodes = [n for n in type_graph.keys()
                            if n.is_omittable()]
-        # Filter out global variable declarations - don't erase them
-        omittable_nodes = [
-            n for n in omittable_nodes
-            if not (isinstance(n, tda.DeclarationNode) and
-                    n.parent_id == '/'.join(ast.GLOBAL_NAMESPACE))
-        ]
+        # Smart filtering for global variable declarations:
+        # Only erase if the declared type is not wider than the inferred type.
+        # This prevents changing semantics for mutable variables.
+        def is_safe_to_erase_global(node):
+            """Check if erasing won't introduce a widening issue."""
+            if not (isinstance(node, tda.DeclarationNode) and
+                    node.parent_id == '/'.join(ast.GLOBAL_NAMESPACE)):
+                # Not a global variable - allow erasure
+                return True
+
+            decl = node.decl
+            if not isinstance(decl, ast.VariableDeclaration):
+                # Not a variable declaration - allow erasure
+                return True
+
+            # Check for widening: if var_type and inferred_type differ,
+            # there's widening, so don't erase (unsafe for mutable variables)
+            if decl.var_type and decl.inferred_type:
+                # Check if types are the same object or have subtyping relationship
+                if decl.var_type == decl.inferred_type:
+                    return True
+                # If they differ, there might be widening - don't erase
+                return False
+
+            # Default: allow erasure
+            return True
+
+        omittable_nodes = [n for n in omittable_nodes if is_safe_to_erase_global(n)]
         omittable_nodes = [
             n
             for n in omittable_nodes
