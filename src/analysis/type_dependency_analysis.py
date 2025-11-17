@@ -5,6 +5,7 @@ from typing import NamedTuple, Union, Dict, List
 from src import utils, graph_utils as gu
 from src.ir import ast, types as tp, type_utils as tu, typescript_types as tst
 from src.ir.context import get_decl
+from src.ir.typescript_ast import TypeAliasDeclaration
 from src.ir.visitors import DefaultVisitor
 from src.transformations.base import change_namespace
 
@@ -96,6 +97,30 @@ class TypeConstructorInstantiationCallNode(NamedTuple):
         return self.parent_id + "/" + self.t.name
 
     def is_omittable(self):
+        """
+        Type constructor instantiation is omittable (type arguments can be erased)
+        ONLY if none of the type arguments are type parameters from enclosing scopes.
+
+        Example that should NOT be erasable:
+          class Foo<M> {
+            method() {
+              return new Bar<M>()  // M is from enclosing class scope
+            }
+          }
+
+        If we erase <M>, TypeScript/Java/Kotlin cannot infer M from the enclosing
+        scope and will default to the constraint (e.g., Object), breaking the type system.
+
+        This conservative rule works across all languages (TypeScript, Java, Kotlin, Groovy).
+        """
+        # Check if any type argument is a TypeParameter (from enclosing scope)
+        for type_arg in self.t.type_args:
+            if type_arg.is_type_var():
+                # This is a type parameter from an enclosing scope
+                # Erasing it would cause the compiler to infer the wrong type
+                return False
+
+        # All type arguments are concrete types, safe to erase
         return True
 
     def get_type(self):
@@ -454,8 +479,12 @@ class TypeDependencyAnalysis(DefaultVisitor):
     def get_visitors(self):
         visitors = super().get_visitors()
         # Language specific node visitors
-        visitors[tst.StringLiteralType] = self._visit_string_literal
+        visitors[TypeAliasDeclaration] =  self.visit_type_alias_decl
         return visitors
+
+        
+    def visit_type_alias_decl(self, node):
+        return node
 
     def visit_integer_constant(self, node):
         node_id, _ = self._get_node_id()
@@ -466,22 +495,37 @@ class TypeDependencyAnalysis(DefaultVisitor):
         self._inferred_nodes[node_id].append(TypeNode(node.real_type, None))
 
     def _visit_string_literal(self, node):
-        node_id, _ = self._get_node_id()
+        """
+        Visit a StringLiteralType TYPE object (not an AST node).
 
-        # Typescript has this
+        This is called when visiting type expressions during type dependency analysis,
+        specifically for TypeScript's StringLiteralType which represents a specific
+        string literal as a type (e.g., the type "foo" rather than the type string).
+
+        Registered in get_visitors() for tst.StringLiteralType.
+        """
+        node_id, _ = self._get_node_id()
+        # Create a TypeScript string literal type from the literal value
         str_literal_type = tst.StringLiteralType(node.literal)
         self._inferred_nodes[node_id].append(TypeNode(str_literal_type, None))
 
-
     def visit_string_constant(self, node):
+        """
+        Visit a StringConstant AST node.
+
+        This is called when visiting actual string constant expressions in the AST.
+        If the node has a stored string_type (e.g., StringLiteralType), use it.
+        Otherwise, infer the generic string type.
+        """
         node_id, _ = self._get_node_id()
-        self._inferred_nodes[node_id].append(
-            TypeNode(self._bt_factory.get_string_type(), None))
+        # Check if the constant has a stored type (e.g., StringLiteralType)
+        inferred_type = node.string_type if node.string_type else self._bt_factory.get_string_type()
+        self._inferred_nodes[node_id].append(TypeNode(inferred_type, None))
 
     def visit_boolean_constant(self, node):
         node_id, _ = self._get_node_id()
-        self._inferred_nodes[node_id].append(
-            TypeNode(self._bt_factory.get_boolean_type(), None))
+        inferred_type = node.boolean_type if node.boolean_type else self._bt_factory.get_boolean_type()
+        self._inferred_nodes[node_id].append(TypeNode(inferred_type, None))
 
     def visit_char_constant(self, node):
         node_id, _ = self._get_node_id()
@@ -684,9 +728,11 @@ class TypeDependencyAnalysis(DefaultVisitor):
         # We create a "virtual" variable declaration representing the
         # return value of the function.
         parent_id, _ = self._get_node_id()
+        ret_expr_type = ret_expr.get_type() if hasattr(ret_expr, 'get_type') else self._func_non_void_block_type
         ret_decl = ast.VariableDeclaration(
             RET, ret_expr, is_final=True,
-            var_type=self._func_non_void_block_type)
+            var_type=self._func_non_void_block_type,
+            inferred_type=ret_expr_type)
         self._handle_declaration(parent_id, ret_decl, ret_expr,
                                  'var_type')
 
@@ -875,9 +921,15 @@ class TypeDependencyAnalysis(DefaultVisitor):
                 return
             if decl_ret_type.is_wildcard():
                 return
-            self._infer_type_variables_parameterized_by_ret(
-                parent_id, node_id, decl_ret_type, func_type_parameters,
-                type_var_nodes)
+            # Only parameterized types have type variable assignments
+            # UnionType and other compound types don't have this method
+            if decl_ret_type.is_parameterized():
+                self._infer_type_variables_parameterized_by_ret(
+                    parent_id, node_id, decl_ret_type, func_type_parameters,
+                    type_var_nodes)
+            else:
+                # For non-parameterized types (e.g., UnionType), record the node
+                self._inferred_nodes[parent_id].append(TypeNode(ret_type, None))
 
     def visit_func_call(self, node):
         parent_node_id, nu = self._get_node_id()

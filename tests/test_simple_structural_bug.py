@@ -34,7 +34,7 @@ def test_simple_case_different_type_params():
     ranch_constructor = tp.TypeConstructor(
         'Ranch',
         [Q_param],
-        ranch_classifier
+        classifier=ranch_classifier
     )
 
     # Create Ranch<E>
@@ -105,7 +105,7 @@ def test_simple_case_different_type_params():
     bronson_constructor = tp.TypeConstructor(
         'Bronson',
         [U_param],
-        bronson_classifier
+        classifier=bronson_classifier
     )
 
     # Create Bronson<E>

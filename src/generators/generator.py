@@ -277,7 +277,7 @@ class Generator():
                     ut.random.bool(prob=0.25) or
                     self.language == 'java' or
                     self.language == 'groovy' and is_interface or
-                    self.language == 'typescript' and is_interface
+                    self.language == 'typescript' 
                 )
                 else self._gen_func_params_with_default()
             )
@@ -823,15 +823,20 @@ class Generator():
             var_type
 
         # Determine the actual inferred type based on the expression
-        # If the expression is a Variable reference, look up its type
-        actual_inferred_type = var_type
-        if isinstance(expr, ast.Variable):
-            # Look up the variable's type from context (searches parent namespaces)
+        # This is what TypeScript would infer from the initializer
+        if hasattr(expr, 'get_type'):
+            actual_inferred_type = expr.get_type()
+        elif isinstance(expr, ast.Variable):
+            # Look up the variable's type from context
             from src.ir.context import get_decl
             lookup_result = get_decl(self.context, self.namespace, expr.name)
             if lookup_result:
                 _, var_decl_ref = lookup_result
                 actual_inferred_type = var_decl_ref.get_type()
+            else:
+                actual_inferred_type = var_type
+        else:
+            actual_inferred_type = var_type
 
         var_decl = ast.VariableDeclaration(
             ut.random.identifier('lower'),
@@ -936,6 +941,7 @@ class Generator():
                 msg = "Found subtype of {}: {}".format(old_type, expr_type)
                 log(self.logger, msg)
                 # Trace subtype selection
+                self._trace_subtype_check('generate_expr', expr_type, old_type, True);
                 trace_info(self, 'generate_expr', {
                     'decision': 'subtype_selected',
                     'original_type': str(old_type),
@@ -1397,6 +1403,8 @@ class Generator():
                     tmp_t
                 )
                 # Trace subtype selection
+                self._trace_subtype_check('gen_conditional',true_type, etype, True);
+                self._trace_subtype_check('gen_conditional',false_type, etype, True);
                 trace_info(self, 'gen_conditional', {
                     'decision': 'subtype_selected',
                     'original_type': str(etype),
@@ -1496,6 +1504,9 @@ class Generator():
         })
 
         subtype = ut.random.choice(subtypes)
+
+        self._trace_subtype_check('gen_is_expr', subtype, var_type, True )
+
         initial_decls = _get_extra_decls(self.namespace)
         prev_namespace = self.namespace
         self.namespace += ('true_block',)
@@ -1508,7 +1519,8 @@ class Generator():
             ast.VariableDeclaration(
                 var.name,
                 ast.BottomConstant(var.get_type()),
-                var_type=subtype))
+                var_type=subtype,
+                inferred_type=subtype))
         true_expr = self.generate_expr(expr_type)
         # We pop the variable from context. Because it's no longer used.
         self.context.remove_var(self.namespace, var.name)
@@ -1986,6 +1998,7 @@ class Generator():
             [s for s in subclasses if s.name == etype.name] or subclasses)
         # Trace final subclass selection
         if subtype and subclasses:
+            self._trace_subtype_check('_get_subclass', selected.get_type(), etype, True)
             trace_info(self, '_get_subclass', {
                 'decision': 'subtype_selected',
                 'target_type': str(etype),
@@ -2905,20 +2918,22 @@ class Generator():
         # VALIDATION: Ensure that after type substitution, the attribute type
         # is actually compatible with etype. This prevents bugs where unification
         # incorrectly maps type parameters from different scopes.
-        if attr_name == 'fields':
-            substituted_attr_type = tp.substitute_type(attr.get_type(), params_map)
-            if subtype:
-                if not substituted_attr_type.is_assignable(etype):
-                    msg = (f"REJECTING: After substitution, field type {substituted_attr_type} "
-                           f"is NOT assignable to target type {etype}")
-                    log(self.logger, msg)
-                    return None
-            else:
-                if substituted_attr_type != etype:
-                    msg = (f"REJECTING: After substitution, field type {substituted_attr_type} "
-                           f"!= target type {etype}")
-                    log(self.logger, msg)
-                    return None
+        # Apply to both fields and functions
+        all_params_map = params_map.copy()
+        all_params_map.update(func_type_var_map)
+        substituted_attr_type = tp.substitute_type(attr.get_type(), all_params_map)
+        if subtype:
+            if not substituted_attr_type.is_assignable(etype):
+                msg = (f"REJECTING: After substitution, {attr_name} type {substituted_attr_type} "
+                       f"is NOT assignable to target type {etype}")
+                log(self.logger, msg)
+                return None
+        else:
+            if substituted_attr_type != etype:
+                msg = (f"REJECTING: After substitution, {attr_name} type {substituted_attr_type} "
+                       f"!= target type {etype}")
+                log(self.logger, msg)
+                return None
 
         return gu.AttrAccessInfo(cls_type, params_map, attr, func_type_var_map)
 
@@ -3091,9 +3106,10 @@ class Generator():
         # Get receiver
         if cls.is_parameterized():
             type_map = {v: k for k, v in type_var_map.items()}
-            if etype2.is_primitive() and (
-                    etype2.box_type() == self.bt_factory.get_void_type()):
-                type_map = None
+            # Note: We must use the type_map to ensure the instantiation
+            # maps type parameters back to the original type variables in etype.
+            # Setting type_map = None causes random instantiation which breaks
+            # the guarantee that the generated field matches etype.
 
             if can_wildcard:
                 variance_choices = gu.init_variance_choices(type_map)
@@ -3112,7 +3128,8 @@ class Generator():
             cls_type, params_map = cls.get_type(), {}
 
         # Generate func_type_var_map
-        for attr in getattr(cls, attr_name):
+        attrs = getattr(cls, attr_name)
+        for attr in attrs:
             if not self._is_sigtype_compatible(attr, etype, params_map,
                                                signature, False):
                 continue
@@ -3128,8 +3145,21 @@ class Generator():
                    "ClassTypeVarMap {}, FuncTypeVarMap {}")
             log(self.logger, msg.format(cls.name, attr_name, etype,
                                         params_map, func_type_var_map))
+
+            # VALIDATION: Ensure generated attribute is compatible with etype
+            all_params_map = params_map.copy()
+            all_params_map.update(func_type_var_map)
+            substituted_attr_type = tp.substitute_type(attr.get_type(), all_params_map)
+            # For generated classes, we expect exact match (signature=False uses exact match in _is_sigtype_compatible)
+            if substituted_attr_type != etype:
+                msg = (f"VALIDATION FAILED: Generated {attr_name} type {substituted_attr_type} "
+                       f"!= target type {etype}")
+                log(self.logger, msg)
+                # This should not happen for generated classes, but log for debugging
+
             return gu.AttrAccessInfo(cls_type, params_map, attr,
                                      func_type_var_map)
+
         return None
 
     # Where

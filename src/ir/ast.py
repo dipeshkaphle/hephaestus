@@ -176,7 +176,7 @@ class VariableDeclaration(Declaration):
         self.expr = expr
         self.is_final = is_final
         self.var_type = var_type
-        self.inferred_type = var_type if var_type else inferred_type
+        self.inferred_type = inferred_type if inferred_type else var_type
         assert self.inferred_type, ("The inferred_type of a variable must"
                                     " not be None")
 
@@ -187,7 +187,7 @@ class VariableDeclaration(Declaration):
         self.var_type = None
 
     def get_type(self):
-        return self.inferred_type
+        return self.var_type if self.var_type else self.inferred_type
 
     def update_children(self, children):
         super().update_children(children)
@@ -222,6 +222,12 @@ class FieldDeclaration(Declaration):
         self.is_final = is_final
         self.can_override = can_override
         self.override = override
+        # Validate that field_type is not None
+        # This helps catch bugs early rather than failing later in type_utils.unify_types
+        assert self.field_type is not None, (
+            f"FieldDeclaration '{name}' created with None field_type. "
+            "This is a bug - fields must have a type."
+        )
 
     def children(self):
         return []
@@ -972,10 +978,17 @@ class RealConstant(Constant):
 
 
 class BooleanConstant(Constant):
-    def __init__(self, literal: str):
+    def __init__(self, literal: str, boolean_type=None):
         assert literal in ('true', 'false'), (
             'Boolean literal is not "true" or "false"')
         super().__init__(literal)
+        self.boolean_type = boolean_type
+
+    def is_equal(self, other):
+        if isinstance(other, BooleanConstant):
+            return (self.literal == other.literal and
+                    self.boolean_type == other.boolean_type)
+        return False
 
 
 class CharConstant(Constant):
@@ -989,6 +1002,15 @@ class CharConstant(Constant):
 
 
 class StringConstant(Constant):
+    def __init__(self, literal: str, string_type=None):
+        super().__init__(literal)
+        self.string_type = string_type
+
+    def is_equal(self, other):
+        if isinstance(other, StringConstant):
+            return (self.literal == other.literal and
+                    self.string_type == other.string_type)
+        return False
 
     def __str__(self):
         return '"{}"'.format(self.literal)

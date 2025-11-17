@@ -3,6 +3,7 @@ from copy import copy
 import itertools
 
 from src.ir import ast
+from src.ir.typescript_ast import TypeAliasDeclaration
 from src.transformations.base import Transformation, change_namespace
 from src.analysis import type_dependency_analysis as tda
 
@@ -21,17 +22,12 @@ class TypeErasure(Transformation):
     def get_visitors(self):
         """Override to add language-specific visitors"""
         visitors = super().get_visitors()
-        # TypeScript-specific nodes
-        try:
-            from src.ir import typescript_ast as ts_ast
-            visitors[ts_ast.TypeAliasDeclaration] = self.visit_type_alias_decl
-        except ImportError:
-            pass
+        visitors[TypeAliasDeclaration] = self.visit_type_alias_decl
         return visitors
 
-    def visit_type_alias_decl(self, node):
-        """Handle TypeScript type alias declarations"""
+    def visit_type_alias_decl (self, node):
         return node
+
 
     @change_namespace
     def visit_class_decl(self, node):
@@ -59,6 +55,34 @@ class TypeErasure(Transformation):
         type_graph.update(self.global_type_graph)
         omittable_nodes = [n for n in type_graph.keys()
                            if n.is_omittable()]
+        # Smart filtering for global variable declarations:
+        # Only erase if the declared type is not wider than the inferred type.
+        # This prevents changing semantics for mutable variables.
+        def is_safe_to_erase_global(node):
+            """Check if erasing won't introduce a widening issue."""
+            if not (isinstance(node, tda.DeclarationNode) and
+                    node.parent_id == '/'.join(ast.GLOBAL_NAMESPACE)):
+                # Not a global variable - allow erasure
+                return True
+
+            decl = node.decl
+            if not isinstance(decl, ast.VariableDeclaration):
+                # Not a variable declaration - allow erasure
+                return True
+
+            # Check for widening: if var_type and inferred_type differ,
+            # there's widening, so don't erase (unsafe for mutable variables)
+            if decl.var_type and decl.inferred_type:
+                # Check if types are the same object or have subtyping relationship
+                if decl.var_type == decl.inferred_type:
+                    return True
+                # If they differ, there might be widening - don't erase
+                return False
+
+            # Default: allow erasure
+            return True
+
+        omittable_nodes = [n for n in omittable_nodes if is_safe_to_erase_global(n)]
         omittable_nodes = [
             n
             for n in omittable_nodes
@@ -77,6 +101,19 @@ class TypeErasure(Transformation):
             if tda.is_combination_feasible(c_type_graph, combination):
                 for g_node in combination:
                     self.is_transformed = True
+                    
+                    # Record the transformation
+                    if hasattr(self.program, 'transformation_tracker'):
+                        from src.transformations.tracker import TransformationRecord
+                        record = TransformationRecord(
+                            transformation_name=self.__class__.__name__,
+                            target_node_id=g_node.node_id,
+                            description=f"Omitted type for node '{g_node.node_id}'.",
+                            original_type=str(g_node.get_type()),
+                            new_type="omitted"
+                        )
+                        self.program.transformation_tracker.record(record)
+
                     if isinstance(g_node, tda.DeclarationNode):
                         g_node.decl.omit_type()
                     if isinstance(g_node,

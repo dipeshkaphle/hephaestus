@@ -64,9 +64,8 @@ def test_parameterized_with_chain_inheritance():
         [foo_con.new([tp.TypeParameter("T1")])]
     )
     baz_con = tp.TypeConstructor(
-        "Bar", [tp.TypeParameter("T1")],
+        "Baz", [tp.TypeParameter("T1")],
         [bar_con.new([tp.TypeParameter("T1")])])
-
     baz = baz_con.new([kt.String])
 
     supertypes = baz.supertypes
@@ -416,6 +415,7 @@ def test_get_bound_rec_wildcards():
     type_param = tp.TypeParameter("T")
     wildcard = tp.WildCardType(type_param, tp.Covariant)
     assert wildcard.get_bound_rec() == type_param
+
 
 
 def test_structural_sibling_classes_not_subtypes():

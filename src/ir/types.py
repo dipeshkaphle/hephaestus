@@ -596,7 +596,7 @@ class TypeParameter(AbstractType):
                 self.bound == other.bound)
 
     def __hash__(self):
-        return hash(str(self.name) + str(self.variance))
+        return hash((self.name, self.variance, self.bound))
 
     def __str__(self):
         return "{}{}{}".format(
@@ -715,7 +715,8 @@ def perform_type_substitution(etype, type_map,
     supertypes = []
     for t in etype.supertypes:
         if t.is_parameterized():
-            supertypes.append(t.substitute_type(type_map, cond=lambda t: False))
+            substituted = t.substitute_type(type_map, cond=lambda t: False)
+            supertypes.append(substituted)
         else:
             supertypes.append(t)
     type_params = []
@@ -759,11 +760,10 @@ class TypeConstructor(AbstractType):
     def __eq__(self, other: AbstractType):
         return (self.__class__ == other.__class__ and
                 self.name == other.name and
-                str(self.type_parameters) == str(other.type_parameters))
+                self.type_parameters == other.type_parameters)
 
     def __hash__(self):
-        return hash(str(self.__class__) + str(self.name) + str(self.supertypes)
-                    + str(self.type_parameters))
+        return hash((self.name, tuple(self.type_parameters)))
 
     def is_type_constructor(self):
         return True
@@ -886,24 +886,37 @@ def _create_substituted_structural_classifier(parameterized_type):
     # Get type substitution map
     type_map = parameterized_type.get_type_variable_assignments()
 
+    # Get all fields (including inherited) from the classifier
+    all_fields = classifier._get_all_fields()
+
     # Substitute types in field signatures
+    # IMPORTANT: Use cond=lambda t: False to force substitution even when
+    # replacing one TypeParameter with another (e.g., Q -> E)
     substituted_fields = []
-    for field in classifier.field_signatures:
-        substituted_type = field.field_type.substitute_type(
-            type_map, cond=lambda t: False)
-        substituted_fields.append(FieldInfo(field.name, substituted_type))
+    for name, field in all_fields.items():
+        # Handle None field_type (defensive check)
+        if field.field_type:
+            substituted_type = field.field_type.substitute_type(
+                type_map, cond=lambda t: False)
+        else:
+            substituted_type = None
+        substituted_fields.append(FieldInfo(name, substituted_type))
+
+    # Get all methods (including inherited) from the classifier
+    all_methods = classifier._get_all_methods()
 
     # Substitute types in method signatures
     substituted_methods = []
-    for method in classifier.method_signatures:
+    for name, method in all_methods.items():
         substituted_params = [
-            param.substitute_type(type_map, cond=lambda t: False)
+            param.substitute_type(type_map, cond=lambda t: False) if param else None
             for param in method.param_types
         ]
-        substituted_return = method.return_type.substitute_type(
-            type_map, cond=lambda t: False)
+        # Handle None return type (e.g., constructors, void methods)
+        substituted_return = (method.return_type.substitute_type(type_map, cond=lambda t: False)
+                             if method.return_type else None)
         substituted_methods.append(
-            MethodInfo(method.name, substituted_params, substituted_return))
+            MethodInfo(name, substituted_params, substituted_return))
 
     # Create new SimpleClassifier with substituted signatures
     return SimpleClassifier(
@@ -926,12 +939,24 @@ class ParameterizedType(SimpleClassifier):
             "You should provide {} types for {}".format(
                 len(self.t_constructor.type_parameters), self.t_constructor)
         self._can_infer_type_args = can_infer_type_args
+
+        # Substitute type variables in supertypes with actual type arguments
+        type_var_map = {
+            t_param: type_args[i]
+            for i, t_param in enumerate(self.t_constructor.type_parameters)
+        }
+        substituted_supertypes = [
+            supertype.substitute_type(type_var_map, lambda t: t.has_type_variables())
+            if hasattr(supertype, 'substitute_type') else supertype
+            for supertype in self.t_constructor.supertypes
+        ]
+
         super().__init__(self.t_constructor.name,
-                         self.t_constructor.supertypes, is_complete=(is_complete(self.t_constructor.classifier)))
+                         substituted_supertypes, is_complete=(is_complete(self.t_constructor.classifier)))
         # Set structural flag based on the type constructor's classifier
         self.structural = is_structural_type(self.t_constructor)
-        # XXX revisit
-        self.supertypes = copy(self.t_constructor.supertypes)
+        # Use substituted supertypes instead of copying raw supertypes
+        self.supertypes = substituted_supertypes
 
     def is_compound(self):
         return True
@@ -964,8 +989,12 @@ class ParameterizedType(SimpleClassifier):
             all_fields = self.t_constructor.classifier._get_all_fields()
             substituted_fields = {}
             for name, field in all_fields.items():
-                substituted_type = field.field_type.substitute_type(
-                    type_map, lambda t: t.has_type_variables())
+                # Handle None field_type (defensive check)
+                if field.field_type:
+                    substituted_type = field.field_type.substitute_type(
+                        type_map, lambda t: t.has_type_variables())
+                else:
+                    substituted_type = None
                 substituted_fields[name] = FieldInfo(name, substituted_type)
             return substituted_fields
         return super()._get_all_fields()
@@ -983,11 +1012,13 @@ class ParameterizedType(SimpleClassifier):
             substituted_methods = {}
             for name, method_info in all_methods.items():
                 substituted_params = [
-                    p.substitute_type(type_map, lambda t: t.has_type_variables())
+                    p.substitute_type(type_map, lambda t: t.has_type_variables()) if p else None
                     for p in method_info.param_types
                 ]
-                substituted_return = method_info.return_type.substitute_type(
+                # Handle None return type (e.g., constructors, void methods)
+                substituted_return = (method_info.return_type.substitute_type(
                     type_map, lambda t: t.has_type_variables())
+                    if method_info.return_type else None)
                 substituted_methods[name] = MethodInfo(name, substituted_params, substituted_return)
             return substituted_methods
         return super()._get_all_methods()
@@ -1067,6 +1098,20 @@ class ParameterizedType(SimpleClassifier):
         }
         type_con = perform_type_substitution(
             self.t_constructor, new_type_map, cond)
+
+        # Also substitute supertypes directly using the original type_map
+        # This handles cases where supertypes already have concrete type args
+        # that need to be substituted (e.g., Miffed<I> -> Miffed<Z> needs
+        # supertypes to go from Petard<I> -> Petard<Z>)
+        substituted_supertypes = []
+        for supertype in type_con.supertypes:
+            if hasattr(supertype, 'substitute_type'):
+                substituted_supertypes.append(
+                    supertype.substitute_type(type_map, cond))
+            else:
+                substituted_supertypes.append(supertype)
+        type_con.supertypes = substituted_supertypes
+
         return ParameterizedType(type_con, type_args)
 
     @property
@@ -1082,16 +1127,11 @@ class ParameterizedType(SimpleClassifier):
     def __eq__(self, other: Type):
         if not isinstance(other, ParameterizedType):
             return False
-        return (self.name == other.name and
-                self.supertypes == other.supertypes and
-                self.t_constructor.__class__ == other.t_constructor.__class__ and
-                self.t_constructor.type_parameters ==
-                other.t_constructor.type_parameters and
+        return (self.t_constructor == other.t_constructor and
                 self.type_args == other.type_args)
 
     def __hash__(self):
-        return hash(str(self.name) + str(self.supertypes) + str(self.type_args)
-                    + str(self.t_constructor.type_parameters))
+        return hash((self.t_constructor, tuple(self.type_args)))
 
     def __str__(self):
         return "{}<{}>".format(self.name,
@@ -1103,25 +1143,34 @@ class ParameterizedType(SimpleClassifier):
 
     @two_way_subtyping
     def is_subtype(self, other: Type) -> bool:
-        # If other is parameterized with the SAME constructor, use variance rules
+        # Check if both types have structural classifiers
+        has_structural = is_structural_type(self)
+        other_has_structural = is_structural_type(other)
+
+        # If other is parameterized with the SAME constructor
         if other.is_parameterized() and hasattr(other, 't_constructor'):
             if self.t_constructor == other.t_constructor:
-                # Same type constructor: use variance checking on type arguments
-                for tp, sarg, targ in zip(self.t_constructor.type_parameters,
-                                          self.type_args, other.type_args):
-                    if not _is_type_arg_contained(sarg, targ, tp):
-                        return False
-                return True
+                if has_structural and other_has_structural:
+                    # Create substituted structural classifiers
+                    self_structural = _create_substituted_structural_classifier(self)
+                    other_structural = _create_substituted_structural_classifier(other)
+                    if self_structural and other_structural:
+                        # Delegate to SimpleClassifier.is_subtype()
+                        return self_structural.is_subtype(other_structural)
+                    return False # Should not happen
+                else:
+                    # Same type constructor (non-structural): use variance checking on type arguments
+                    for tp, sarg, targ in zip(self.t_constructor.type_parameters,
+                                              self.type_args, other.type_args):
+                        if not _is_type_arg_contained(sarg, targ, tp):
+                            return False
+                    return True
 
         # First check nominal subtyping (inheritance)
         if super().is_subtype(other):
             return True
 
-        # Check if both types have structural classifiers (different constructors)
-        has_structural = is_structural_type(self)
-        other_has_structural = is_structural_type(other)
-
-        # If both have structural classifiers (and different constructors), do structural check
+        # If both have structural classifiers, do structural check
         if has_structural and other_has_structural:
             # Create substituted structural classifiers
             self_structural = _create_substituted_structural_classifier(self)

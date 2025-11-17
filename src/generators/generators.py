@@ -11,11 +11,22 @@ from src.ir import ast
 from src.generators import utils as gu
 
 
-# pylint: disable=unused-argument
 def gen_string_constant(expr_type=None) -> ast.StringConstant:
     """Generate a string constant.
+
+    If expr_type is a StringLiteralType, uses its literal value.
+    Otherwise generates a random identifier.
     """
-    return ast.StringConstant(utils.random.identifier())
+    # Import here to avoid circular dependency
+    try:
+        from src.ir import typescript_types as tst
+        if isinstance(expr_type, tst.StringLiteralType):
+            # Use the literal from the type
+            return ast.StringConstant(expr_type.literal, expr_type)
+    except ImportError:
+        pass
+
+    return ast.StringConstant(utils.random.identifier(), expr_type)
 
 
 # pylint: disable=unused-argument

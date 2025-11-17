@@ -1022,8 +1022,13 @@ def test_program28():
     decl_node = find_omittable_node("global/C/foo/x", nodes)
     type_inst_node = find_omittable_node("global/C/foo/x/B", nodes)
 
-    assert not tda.is_combination_feasible(type_graph,
-                                           (decl_node, type_inst_node))
+    # With the fix for type parameter erasure, B<T> is no longer omittable
+    # because T is a type parameter from enclosing class C<T>
+    # This is correct behavior - erasing <T> would cause compiler to infer wrong type
+    assert type_inst_node is None, "B<T> should not be omittable (T is from enclosing scope)"
+
+    # The declaration node still exists but feasibility may vary
+    assert decl_node is not None
 
 
 def test_program29():

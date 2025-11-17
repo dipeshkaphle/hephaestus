@@ -546,10 +546,10 @@ def test_find_irrelevant_type():
     baz = tp.SimpleClassifier("Baz", [bar])
     qux = tp.SimpleClassifier("Qux", [])
 
-    ir_type = tutils.find_irrelevant_type(bar, [foo, bar, baz], KT_FACTORY)
+    ir_type, _ = tutils.find_irrelevant_type(bar, [foo, bar, baz], KT_FACTORY)
     assert ir_type is None
 
-    ir_type = tutils.find_irrelevant_type(bar, [foo, bar, baz, qux],
+    ir_type, _ = tutils.find_irrelevant_type(bar, [foo, bar, baz, qux],
                                           KT_FACTORY)
     assert ir_type == qux
 
@@ -563,12 +563,12 @@ def test_find_irrelevant_type_parameterized():
     con = tp.TypeConstructor("X", [tp.TypeParameter("T")])
     t = con.new([bar])
 
-    ir_type = tutils.find_irrelevant_type(t, [foo, bar, baz, con], KT_FACTORY)
+    ir_type, _ = tutils.find_irrelevant_type(t, [foo, bar, baz, con], KT_FACTORY)
     assert ir_type is not None
     assert not ir_type.is_subtype(t)
     assert not t.is_subtype(ir_type)
 
-    ir_type = tutils.find_irrelevant_type(t, [foo, bar, baz, qux, con],
+    ir_type, _ = tutils.find_irrelevant_type(t, [foo, bar, baz, qux, con],
                                           KT_FACTORY)
     assert ir_type is not None
     assert not ir_type.is_subtype(t)
@@ -577,12 +577,12 @@ def test_find_irrelevant_type_parameterized():
     con = tp.TypeConstructor(
         "X", [tp.TypeParameter("T", variance=tp.Covariant)])
     t = con.new([bar])
-    ir_type = tutils.find_irrelevant_type(t, [foo, bar, baz, con], KT_FACTORY)
+    ir_type, _ = tutils.find_irrelevant_type(t, [foo, bar, baz, con], KT_FACTORY)
     assert ir_type is not None
     assert not ir_type.is_subtype(t)
     assert not t.is_subtype(ir_type)
 
-    ir_type = tutils.find_irrelevant_type(t, [foo, bar, baz, qux, con],
+    ir_type, _ = tutils.find_irrelevant_type(t, [foo, bar, baz, qux, con],
                                           KT_FACTORY)
     assert ir_type is not None
     assert not ir_type.is_subtype(t)
@@ -591,12 +591,12 @@ def test_find_irrelevant_type_parameterized():
     con = tp.TypeConstructor(
         "X", [tp.TypeParameter("T", variance=tp.Contravariant)])
     t = con.new([bar])
-    ir_type = tutils.find_irrelevant_type(t, [foo, bar, baz, con], KT_FACTORY)
+    ir_type, _ = tutils.find_irrelevant_type(t, [foo, bar, baz, con], KT_FACTORY)
     assert ir_type is not None
     assert not ir_type.is_subtype(t)
     assert not t.is_subtype(ir_type)
 
-    ir_type = tutils.find_irrelevant_type(t, [foo, bar, baz, qux, con],
+    ir_type, _ = tutils.find_irrelevant_type(t, [foo, bar, baz, qux, con],
                                           KT_FACTORY)
     assert ir_type is not None
     assert not ir_type.is_subtype(t)
@@ -608,7 +608,7 @@ def test_find_irrelevant_type_parameterized2():
     t = con.new([foo])
     bar = tp.SimpleClassifier("Bar", [t])
 
-    ir_type = tutils.find_irrelevant_type(t, [foo, con, bar], KT_FACTORY)
+    ir_type, _ = tutils.find_irrelevant_type(t, [foo, con, bar], KT_FACTORY)
     assert ir_type is not None
     assert not ir_type.is_subtype(t)
     assert not t.is_subtype(ir_type)
@@ -626,7 +626,7 @@ def test_find_irrelevant_type_parameterized_parent():
             bar.get_type().new([foo.get_type()]))], 0)
     qux = ast.ClassDeclaration("Qux", [], 0)
 
-    ir_type = tutils.find_irrelevant_type(baz.get_type(), [foo, bar, baz],
+    ir_type, _ = tutils.find_irrelevant_type(baz.get_type(), [foo, bar, baz],
                                           KT_FACTORY)
     assert ir_type is not None
 
@@ -639,13 +639,46 @@ def test_find_irrelevant_type_with_given_classes():
         "Baz", [ast.SuperClassInstantiation(bar.get_type())], 0)
     qux = ast.ClassDeclaration("Qux", [], 0)
 
-    ir_type = tutils.find_irrelevant_type(bar.get_type(), [foo, bar, baz],
+    ir_type, _ = tutils.find_irrelevant_type(bar.get_type(), [foo, bar, baz],
                                           KT_FACTORY)
     assert ir_type is None
 
-    ir_type = tutils.find_irrelevant_type(bar.get_type(), [foo, bar, baz, qux],
+    ir_type, _ = tutils.find_irrelevant_type(bar.get_type(), [foo, bar, baz, qux],
                                           KT_FACTORY)
     assert ir_type == qux.get_type()
+
+
+def test_find_irrelevant_type_excludes_object_for_classes():
+    """Object should be excluded as irrelevant type for class types in TypeScript"""
+    from src.ir.typescript_types import TypeScriptBuiltinFactory, ObjectType
+
+    ts_factory = TypeScriptBuiltinFactory()
+
+    # Create a class type
+    tomsk = tp.SimpleClassifier(
+        name="Tomsk",
+        structural=True,
+        field_signatures=[tp.FieldInfo("x", ts_factory.get_number_type())],
+        is_complete=True
+    )
+
+    obj = ObjectType()
+    number_type = ts_factory.get_number_type()
+    string_type = ts_factory.get_string_type()
+
+    types = [tomsk, obj, number_type, string_type]
+
+    # Find supertypes - Object should be included
+    supertypes = tutils.find_supertypes(tomsk, types, include_self=False)
+    assert obj in supertypes, "Object should be a supertype of class types"
+
+    # Find irrelevant type - Object should NOT be returned since it's a supertype
+    ir_type, debug_info = tutils.find_irrelevant_type(tomsk, types, ts_factory)
+
+    # The irrelevant type should be a primitive (number or string), not Object
+    assert ir_type is not None, "Should find an irrelevant type"
+    assert ir_type != obj, "Object should not be selected as irrelevant type for classes"
+    assert ir_type in [number_type, string_type], "Should select a primitive type as irrelevant"
 
 
 def test_type_hint_constants_and_binary_ops():

@@ -83,11 +83,18 @@ class TypeScriptTranslator(BaseTranslator):
     def get_union(self, utype):
         return " | ".join([self.get_type_name(t, True) for t in utype.types])
 
-    def type_arg2str(self, t_arg, from_union=False):
+    def type_arg2str(self, t_arg, from_union=False, in_contravariant_position=False):
         # TypeScript does not have a Wildcard type
         if not t_arg.is_wildcard():
             return self.get_type_name(t_arg, from_union)
-        return "unknown"
+
+        # For wildcards, use variance-aware translation:
+        # - Contravariant positions (function parameters): use 'any'
+        # - Covariant/invariant positions: use 'unknown'
+        # This is necessary because in strict mode, (p0: S) => S cannot satisfy
+        # (p0: unknown) => unknown due to contravariance of function parameters.
+        # Using 'any' in contravariant positions matches Java/Kotlin wildcard semantics.
+        return "any" if in_contravariant_position else "unknown"
 
     def get_type_name(self, t, from_union=False):
         t_constructor = getattr(t, 't_constructor', None)
@@ -106,7 +113,8 @@ class TypeScriptTranslator(BaseTranslator):
                 inner = f"({inner})"
             return f"keyof {inner}"
         if (isinstance(t, tst.NumberLiteralType) or
-            isinstance(t, tst.StringLiteralType)):
+            isinstance(t, tst.StringLiteralType) or
+            isinstance(t, tst.BooleanLiteralType)):
             return str(t.get_literal())
         if t.name == 'UnionType':
             return self.get_union(t)
@@ -121,9 +129,10 @@ class TypeScriptTranslator(BaseTranslator):
         if t_constructor.name.startswith(func_name):
             param_types = t.type_args[:-1]
             ret_type = t.type_args[-1]
+            # Function parameters are contravariant, return type is covariant
             res = "({}) => {}".format(
                 ",".join([
-                    "p" + str(i) + ": " + str(self.type_arg2str(pt))
+                    "p" + str(i) + ": " + str(self.type_arg2str(pt, in_contravariant_position=True))
                     for i, pt in enumerate(param_types)
                 ]),
                 self.type_arg2str(ret_type)
@@ -329,7 +338,7 @@ class TypeScriptTranslator(BaseTranslator):
 
     @append_to
     def visit_null_constant(self, node):
-        self._children_res.append(node.literal)
+        self._children_res.append("({} as {})".format(node.literal,node.literal))
 
     @append_to
     def visit_var_decl(self, node):
@@ -516,16 +525,20 @@ class TypeScriptTranslator(BaseTranslator):
         if isinstance(node.integer_type, tst.BigIntegerType):
             literal = "BigInt({})".format(str(node.literal))
         elif isinstance(node.integer_type, tst.NumberLiteralType):
-            literal = "{} as {}".format(str(node.literal), str(node.literal))
+            literal = "( {} as {} )".format(str(node.literal), str(node.literal))
         else:
-            literal = str(node.literal)
+            # Add type assertion to prevent literal type inference
+            literal = "( {} as number )".format(str(node.literal))
         self._children_res.append(" "*self.ident + literal)
 
     @append_to
     def visit_real_constant(self, node):
         literal = str(node.literal)
         if isinstance(node.real_type, tst.NumberLiteralType):
-            literal = "{} as {}".format(str(node.literal), str(node.literal))
+            literal = "( {} as {} )".format(str(node.literal), str(node.literal))
+        else:
+            # Add type assertion to prevent literal type inference
+            literal = "( {} as number )".format(str(node.literal))
         self._children_res.append(" "*self.ident + literal)
 
     @append_to
@@ -535,16 +548,35 @@ class TypeScriptTranslator(BaseTranslator):
 
     @append_to
     def visit_string_constant(self, node):
-        self._children_res.append('"{}"'.format(node.literal))
+        # Add type assertion based on stored type
+        if isinstance(node.string_type, tst.StringLiteralType):
+            # Want literal type: "value" as "value"
+            literal = '( "{}" as "{}" )'.format(node.literal, node.literal)
+        elif node.string_type is not None:
+            # Want general string type: "value" as string
+            literal = '( "{}" as string )'.format(node.literal)
+        else:
+            # No type specified, let TypeScript infer (will be literal type)
+            literal = '"{}"'.format(node.literal)
+        self._children_res.append(literal)
 
     @append_to
     def visit_boolean_constant(self, node):
-        self._children_res.append(str(node.literal))
+        # Add type assertion based on stored type
+        if isinstance(node.boolean_type, tst.BooleanLiteralType):
+            # Want literal type: "true" as "true"
+            literal = '( {} as {} )'.format(str(node.literal).lower(), str(node.literal).lower())
+        else:
+            # Default to base boolean type to prevent unwanted literal inference
+            literal = '( {} as boolean )'.format(str(node.literal).lower())
+        self._children_res.append(literal)
 
     @append_to
     def visit_array_expr(self, node):
         if not node.length:
-            return self._children_res.append("[]")
+            # Empty array needs type assertion
+            array_type_str = self.get_type_name(node.array_type)
+            return self._children_res.append("([] as {})".format(array_type_str))
         old_ident = self.ident
         self.ident = 0
         children = node.children()
@@ -552,8 +584,11 @@ class TypeScriptTranslator(BaseTranslator):
             c.accept(self)
         children_res = self.pop_children_res(children)
         self.ident = old_ident
-        return self._children_res.append("[{}]".format(
-            ", ".join(children_res)))
+        # Add type assertion to prevent widening of literal types
+        array_literal = "[{}]".format(", ".join(children_res))
+        array_type_str = self.get_type_name(node.array_type)
+        return self._children_res.append("({} as {})".format(
+            array_literal, array_type_str))
 
     @append_to
     def visit_variable(self, node):

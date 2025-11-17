@@ -9,6 +9,39 @@ import src.utils as ut
 from src.ir.decorators import two_way_subtyping
 
 
+class TypeScriptParameterizedType(tp.ParameterizedType):
+    """
+    TypeScript-specific parameterized types with structural typing support.
+
+    In TypeScript, parameterized structural types (Array, Function, etc.)
+    that extend Object are assignable to empty interfaces due to structural typing.
+
+    Examples:
+        Array<number> <: EmptyInterface  (Array extends Object)
+        Function<T, R> <: EmptyInterface (Function extends Object)
+    """
+
+    def is_subtype(self, other):
+        # First check parametric variance (standard ParameterizedType behavior)
+        if super().is_subtype(other):
+            return True
+
+        # TypeScript structural typing: if constructor is/has ObjectType,
+        # delegate to ObjectType for empty interface checking
+
+        # Case 1: Constructor IS an ObjectType (e.g., ArrayType via multiple inheritance)
+        if isinstance(self.t_constructor, ObjectType):
+            return ObjectType().is_subtype(other)
+
+        # Case 2: Constructor HAS ObjectType in supertypes (e.g., FunctionType)
+        if hasattr(self.t_constructor, 'supertypes'):
+            for st in self.t_constructor.supertypes:
+                if isinstance(st, ObjectType):
+                    return ObjectType().is_subtype(other)
+
+        return False
+
+
 class TypeScriptBuiltinFactory(bt.BuiltinFactory):
     def __init__(self, max_union_types=10, max_types_in_union=4,
                  max_string_literal_types=10, max_num_literal_types=10):
@@ -328,7 +361,9 @@ class TypeScriptBuiltinFactory(bt.BuiltinFactory):
             "NumberLiteralType": lambda etype: ast.IntegerConstant(
                 etype.literal, NumberLiteralType(etype.literal)),
             "StringLiteralType": lambda etype: ast.StringConstant(
-                etype.literal),
+                etype.literal, etype),
+            "BooleanLiteralType": lambda etype: ast.BooleanConstant(
+                str(etype.literal).lower(), etype),
             "UnionType": lambda etype: self._union_type_factory.get_union_constant(
                 etype, constants),
         }
@@ -352,17 +387,101 @@ class ObjectType(TypeScriptBuiltin):
     def __init__(self, name="Object"):
         super().__init__(name, False)
 
+    @two_way_subtyping
+    def is_subtype(self, other):
+        """
+        Check if ObjectType <: other
+
+        In TypeScript, empty structural types (interfaces/classes with no fields
+        or methods) are structurally equivalent to Object because they impose
+        no requirements on their inhabitants.
+
+        Returns True when:
+        1. other is ObjectType itself
+        2. other is an empty structural type (no fields, no methods, but complete)
+        """
+        # Handle self-equality
+        if other == self:
+            return True
+
+        # Check if other is an empty structural type
+        if tp.is_structural_type(other) and tp.is_complete(other):
+            other_fields = (other._get_all_fields() if hasattr(other, '_get_all_fields')
+                          else {})
+            other_methods = (other._get_all_methods() if hasattr(other, '_get_all_methods')
+                           else {})
+
+            # Empty structural types are equivalent to Object
+            if not other_fields and not other_methods:
+                return True
+
+        return False
+
+    def two_way_subtyping(self, other):
+        """
+        Handle reverse check: is other <: ObjectType?
+
+        In TypeScript, all class/interface types (structural types) are subtypes of Object.
+
+        IMPORTANT: We cannot delegate to other.is_subtype(self) because that
+        would cause infinite recursion. We must do a concrete check here.
+        """
+        # All structural types (classes, interfaces) are subtypes of Object
+        if tp.is_structural_type(other) and tp.is_complete(other):
+            return True
+
+        # Default: return False (conservative)
+        # We don't delegate to other.is_subtype(self) to avoid infinite recursion
+        return False
+
 
 class ObjectLowercaseType(TypeScriptBuiltin):
     def __init__(self, name="object"):
         super().__init__(name, False)
         self.supertypes.append(ObjectType())
 
+    @two_way_subtyping
+    def is_subtype(self, other):
+        """
+        Check if object (lowercase) <: other
+
+        Similar to ObjectType, empty structural types are equivalent to object.
+        """
+        # Check nominal subtyping (object <: Object)
+        if other in self.get_supertypes() or other == self:
+            return True
+
+        # Check if other is an empty structural type
+        if tp.is_structural_type(other) and tp.is_complete(other):
+            other_fields = (other._get_all_fields() if hasattr(other, '_get_all_fields')
+                          else {})
+            other_methods = (other._get_all_methods() if hasattr(other, '_get_all_methods')
+                           else {})
+
+            if not other_fields and not other_methods:
+                return True
+
+        return False
+
+    def two_way_subtyping(self, other):
+        """Handle reverse check: is other <: object?"""
+        # Empty structural types are subtypes of object
+        if tp.is_structural_type(other) and tp.is_complete(other):
+            other_fields = (other._get_all_fields() if hasattr(other, '_get_all_fields')
+                          else {})
+            other_methods = (other._get_all_methods() if hasattr(other, '_get_all_methods')
+                           else {})
+
+            if not other_fields and not other_methods:
+                return True
+
+        return False
+
 
 class VoidType(TypeScriptBuiltin):
     def __init__(self, name="void"):
         super().__init__(name, False)
-        self.supertypes.append(ObjectType())
+        # void is NOT assignable to Object in TypeScript strict mode
 
 
 class NumberType(TypeScriptBuiltin):
@@ -377,6 +496,14 @@ class NumberType(TypeScriptBuiltin):
         if self.is_primitive:
             return "number"
         return super().get_name()
+
+    def is_subtype(self, other):
+        """Delegate to ObjectType for structural typing (empty interfaces)."""
+        # Check nominal subtyping first (via parent class which has @two_way_subtyping)
+        if super().is_subtype(other):
+            return True
+        # Delegate to ObjectType which handles empty interfaces
+        return ObjectType().is_subtype(other)
 
 
 class BigIntegerType(TypeScriptBuiltin):
@@ -396,6 +523,12 @@ class BigIntegerType(TypeScriptBuiltin):
             return "bigint"
         return super().get_name()
 
+    def is_subtype(self, other):
+        """Delegate to ObjectType for structural typing (empty interfaces)."""
+        if super().is_subtype(other):
+            return True
+        return ObjectType().is_subtype(other)
+
 
 class BooleanType(TypeScriptBuiltin):
     def __init__(self, name="Boolean", primitive=False):
@@ -409,6 +542,12 @@ class BooleanType(TypeScriptBuiltin):
         if self.is_primitive:
             return "boolean"
         return super().get_name()
+
+    def is_subtype(self, other):
+        """Delegate to ObjectType for structural typing (empty interfaces)."""
+        if super().is_subtype(other):
+            return True
+        return ObjectType().is_subtype(other)
 
 
 class StringType(TypeScriptBuiltin):
@@ -424,6 +563,12 @@ class StringType(TypeScriptBuiltin):
             return "string"
         return super().get_name()
 
+    def is_subtype(self, other):
+        """Delegate to ObjectType for structural typing (empty interfaces)."""
+        if super().is_subtype(other):
+            return True
+        return ObjectType().is_subtype(other)
+
 
 class SymbolType(TypeScriptBuiltin):
     def __init__(self, name="Symbol", primitive=False):
@@ -438,11 +583,19 @@ class SymbolType(TypeScriptBuiltin):
             return "symbol"
         return super().get_name()
 
+    def is_subtype(self, other):
+        """Delegate to ObjectType for structural typing (empty interfaces)."""
+        if super().is_subtype(other):
+            return True
+        return ObjectType().is_subtype(other)
 
-class NullType(ObjectType):
+
+class NullType(TypeScriptBuiltin):
     def __init__(self, name="null", primitive=False):
-        super().__init__(name)
-        self.primitive = primitive
+        super().__init__(name, primitive)
+
+    def is_subtype(self, other):
+        return isinstance(other, NullType)
 
     def box_type(self):
         return NullType(self.name)
@@ -451,10 +604,12 @@ class NullType(ObjectType):
         return 'null'
 
 
-class UndefinedType(ObjectType):
+class UndefinedType(TypeScriptBuiltin):
     def __init__(self, name="undefined", primitive=False):
-        super().__init__(name)
-        self.primitive = primitive
+        super().__init__(name, primitive)
+
+    def is_subtype(self, other):
+        return isinstance(other, UndefinedType)
 
     def box_type(self):
         return UndefinedType(self.name)
@@ -463,9 +618,9 @@ class UndefinedType(ObjectType):
         return 'undefined'
 
 
-class AliasType(ObjectType):
+class AliasType(TypeScriptBuiltin):
     def __init__(self, alias, name="AliasType", primitive=False):
-        super().__init__()
+        super().__init__(name, primitive)
         self.alias = alias
         self.name = name
         self.primitive = primitive
@@ -473,11 +628,15 @@ class AliasType(ObjectType):
     def get_type(self):
         return self.alias
 
+
     @two_way_subtyping
     def is_subtype(self, other):
         if isinstance(other, AliasType):
             return self.alias.is_subtype(other.alias)
         return self.alias.is_subtype(other)
+
+    def two_way_subtyping(self, other):
+        return other.is_subtype(self.alias)
 
     def box_type(self):
         return AliasType(self.alias, self.name)
@@ -525,9 +684,13 @@ class NumberLiteralType(TypeScriptBuiltin):
         elif isinstance(other, AliasType):
             return isinstance(other.alias, NumberType)
 
-        return ((isinstance(other, NumberLiteralType) and
-                  other.get_literal() == self.get_literal()) or
-                  isinstance(other, NumberType))
+        if ((isinstance(other, NumberLiteralType) and
+              other.get_literal() == self.get_literal()) or
+              isinstance(other, NumberType)):
+            return True
+
+        # Check transitive supertypes (e.g., NumberLiteralType <: Number <: Object)
+        return any(st.is_subtype(other) for st in self.supertypes)
 
     def get_name(self):
         return self.name
@@ -573,9 +736,13 @@ class StringLiteralType(TypeScriptBuiltin):
         elif isinstance(other, AliasType):
             return isinstance(other.alias, StringType)
 
-        return ((isinstance(other, StringLiteralType) and
-                  other.get_literal() == self.get_literal()) or
-                  isinstance(other, StringType))
+        if ((isinstance(other, StringLiteralType) and
+              other.get_literal() == self.get_literal()) or
+              isinstance(other, StringType)):
+            return True
+
+        # Check transitive supertypes (e.g., StringLiteralType <: String <: Object)
+        return any(st.is_subtype(other) for st in self.supertypes)
 
     def get_name(self):
         return self.name
@@ -589,18 +756,58 @@ class StringLiteralType(TypeScriptBuiltin):
         return hash(str(self.name) + str(self.literal))
 
 
+class BooleanLiteralType(TypeScriptBuiltin):
+    def __init__(self, literal, name="BooleanLiteralType", primitive=False):
+        super().__init__(name, primitive)
+        assert isinstance(literal, bool), "Boolean literal must be a bool"
+        self.literal = literal
+        self.supertypes.append(BooleanType())
+
+    def get_literal(self):
+        return str(self.literal).lower()
+
+    @two_way_subtyping
+    def is_subtype(self, other):
+        if isinstance(other, AliasType):
+            other = other.alias
+
+        if isinstance(other, BooleanType):
+            return True
+
+        if (isinstance(other, BooleanLiteralType) and
+                other.get_literal() == self.get_literal()):
+            return True
+
+        # Check transitive supertypes (e.g., BooleanLiteralType <: Boolean <: Object)
+        return any(st.is_subtype(other) for st in self.supertypes)
+
+    def get_name(self):
+        return self.name
+
+    def __eq__(self, other):
+        return (self.__class__ == other.__class__ and
+                self.name == other.name and
+                self.literal == other.literal)
+
+    def __hash__(self):
+        return hash((self.name, self.literal))
+
+
 class LiteralTypeFactory:
-    def __init__(self, str_limit, num_limit):
+    def __init__(self, str_limit, num_limit, bool_limit=2):
         self.str_literals = []
         self.num_literals = []
+        self.bool_literals = []
         # Define max number for generated literals
         self.str_limit = str_limit
         self.num_limit = num_limit
+        self.bool_limit = bool_limit
 
     def get_literal_types(self):
         sl = self.gen_string_literal()
         nl = self.gen_number_literal()
-        return [sl, nl]
+        bl = self.gen_boolean_literal()
+        return [sl, nl, bl]
 
     def gen_string_literal(self):
         lit = None
@@ -630,6 +837,21 @@ class LiteralTypeFactory:
             lit = ut.random.choice(self.num_literals)
         return lit
 
+    def gen_boolean_literal(self):
+        # There are only two boolean literals, so we don't need a limit check like the others
+        if len(self.bool_literals) < 2:
+            if not any(l.literal for l in self.bool_literals):
+                lit = BooleanLiteralType(True)
+            elif any(l.literal for l in self.bool_literals) and not all(l.literal for l in self.bool_literals):
+                 lit = BooleanLiteralType(ut.random.choice([True, False]))
+            else:
+                lit = BooleanLiteralType(False)
+            if lit not in self.bool_literals:
+                self.bool_literals.append(lit)
+        else:
+            lit = ut.random.choice(self.bool_literals)
+        return lit
+
 
 class UnionType(TypeScriptBuiltin):
     def __init__(self, types, name="UnionType", primitive=False):
@@ -644,15 +866,11 @@ class UnionType(TypeScriptBuiltin):
 
     @two_way_subtyping
     def is_subtype(self, other):
-        if isinstance(other, UnionType):
-            for t in self.types:
-                if not any(t.is_subtype(other_t) for other_t in other.types):
-                    return False
-            return True
-        return other.name == 'Object'
+        # A union U is a subtype of a type T if and only if all members of U are subtypes of T.
+        return all(t.is_subtype(other) for t in self.types)
 
     def two_way_subtyping(self, other):
-        return other in set(self.types)
+        return any(other.is_subtype(t) for t in self.types)
 
     def substitute_type(self, type_map,
                         cond=lambda t: t.has_type_variables()):
@@ -666,6 +884,11 @@ class UnionType(TypeScriptBuiltin):
 
     def has_type_variables(self):
         return any(t.has_type_variables() for t in self.types)
+
+    def get_type_variable_assignments(self):
+        # UnionType doesn't have type parameters like ParameterizedType,
+        # so return an empty dict
+        return {}
 
     def get_type_variables(self, factory):
         # This function actually returns a dict of the enclosing type variables
@@ -1395,6 +1618,16 @@ class ArrayType(tp.TypeConstructor, ObjectType):
         super().__init__(name, [tp.TypeParameter(
             "T", variance=tp.Covariant)])
 
+    def new(self, type_args):
+        """Return TypeScript-specific ParameterizedType for structural typing support"""
+        type_map = {tp_param: type_args[i]
+                    for i, tp_param in enumerate(self.type_parameters)}
+        old_supertypes = self.supertypes
+        type_con = tp.perform_type_substitution(self, type_map)
+        etype = TypeScriptParameterizedType(type_con, type_args)
+        etype.t_constructor.supertypes = old_supertypes
+        return etype
+
 
 class FunctionType(tp.TypeConstructor):
     def __init__(self, nr_type_parameters: int):
@@ -1410,6 +1643,16 @@ class FunctionType(tp.TypeConstructor):
         self.nr_type_parameters = nr_type_parameters
         super().__init__(name, type_parameters)
         self.supertypes.append(ObjectType())
+
+    def new(self, type_args):
+        """Return TypeScript-specific ParameterizedType for structural typing support"""
+        type_map = {tp_param: type_args[i]
+                    for i, tp_param in enumerate(self.type_parameters)}
+        old_supertypes = self.supertypes
+        type_con = tp.perform_type_substitution(self, type_map)
+        etype = TypeScriptParameterizedType(type_con, type_args)
+        etype.t_constructor.supertypes = old_supertypes
+        return etype
 
 
 # Generator Extension

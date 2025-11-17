@@ -289,7 +289,6 @@ def test_union_subtyping_number_bigint_incompatibility():
     # And number alone is NOT a subtype of bigint | "lorry"
     assert not tst.NumberType().is_subtype(bigint_or_lorry)
 
-
 def test_indexed_access_with_union_keys():
     """
     Test indexed access types with union of string literal keys.
@@ -372,3 +371,263 @@ def test_indexed_access_with_union_keys():
     # Test 6: Union key subtyping
     # If T["a" | "b"] resolves to number | string, it should be subtype of Object
     assert indexed_type.is_subtype(tst.ObjectType())
+
+def test_number_literal_subtype_of_number():
+    """Test that number literals are subtypes of number type"""
+    num_lit_5 = tst.NumberLiteralType(5)
+    num_lit_42 = tst.NumberLiteralType(42)
+    num_lit_neg = tst.NumberLiteralType(-10)
+    number_type = tst.NumberType()
+
+    # Number literals should be subtypes of number
+    assert num_lit_5.is_subtype(number_type)
+    assert num_lit_42.is_subtype(number_type)
+    assert num_lit_neg.is_subtype(number_type)
+
+    # But number should NOT be a subtype of a literal
+    assert not number_type.is_subtype(num_lit_5)
+    assert not number_type.is_subtype(num_lit_42)
+
+    # Different literals are not subtypes of each other
+    assert not num_lit_5.is_subtype(num_lit_42)
+    assert not num_lit_42.is_subtype(num_lit_5)
+
+
+def test_type_alias_number_subtyping():
+    """Test subtyping relationships with type aliases for numbers"""
+    # type NumAlias = number
+    num_alias = ts_ast.TypeAliasDeclaration("NumAlias", tst.NumberType()).get_type()
+    number_type = tst.NumberType()
+    num_lit = tst.NumberLiteralType(10)
+
+    # Type alias of number should be equivalent to number
+    assert num_alias.is_subtype(number_type)
+    assert number_type.is_subtype(num_alias)
+
+    # Number literal should be subtype of type alias to number
+    assert num_lit.is_subtype(num_alias)
+    assert not num_alias.is_subtype(num_lit)
+
+
+def test_type_alias_number_literal_subtyping():
+    """Test subtyping with type aliases that reference number literals"""
+    # type Five = 5
+    five_alias = ts_ast.TypeAliasDeclaration("Five", tst.NumberLiteralType(5)).get_type()
+    # type Ten = 10
+    ten_alias = ts_ast.TypeAliasDeclaration("Ten", tst.NumberLiteralType(10)).get_type()
+
+    number_type = tst.NumberType()
+    num_lit_5 = tst.NumberLiteralType(5)
+    num_lit_10 = tst.NumberLiteralType(10)
+
+    # Literal type aliases should be subtypes of number
+    assert five_alias.is_subtype(number_type)
+    assert ten_alias.is_subtype(number_type)
+
+    # Literal type aliases should be equivalent to their literals
+    assert five_alias.is_subtype(num_lit_5)
+    assert num_lit_5.is_subtype(five_alias)
+    assert ten_alias.is_subtype(num_lit_10)
+    assert num_lit_10.is_subtype(ten_alias)
+
+    # Different literal aliases are not subtypes of each other
+    assert not five_alias.is_subtype(ten_alias)
+    assert not ten_alias.is_subtype(five_alias)
+    assert not five_alias.is_subtype(num_lit_10)
+    assert not ten_alias.is_subtype(num_lit_5)
+
+
+def test_type_alias_nested_number_literal():
+    """Test nested type aliases with number literals"""
+    # type Five = 5
+    # type FiveAlias = Five
+    five_lit = tst.NumberLiteralType(5)
+    five_alias = ts_ast.TypeAliasDeclaration("Five", five_lit).get_type()
+    five_alias_alias = ts_ast.TypeAliasDeclaration("FiveAlias", five_alias).get_type()
+
+    number_type = tst.NumberType()
+
+    # Nested alias should still be subtype of number
+    assert five_alias_alias.is_subtype(number_type)
+    assert five_alias_alias.is_subtype(five_alias)
+    assert five_alias_alias.is_subtype(five_lit)
+
+    # And equivalent to the original literal
+    assert five_lit.is_subtype(five_alias_alias)
+    assert five_alias.is_subtype(five_alias_alias)
+
+
+def test_array_variance_structural():
+    """Tests array type variance (covariance) with structural types."""
+    # In TypeScript, if A is a subtype of B, then A[] is a subtype of B[].
+
+    # Structural types for subtyping
+    # interface B { x: number }
+    # interface A extends B { y: string }
+    b_type = tp.SimpleClassifier(
+        name="B",
+        structural=True,
+        field_signatures=[tp.FieldInfo("x", tst.NumberType())]
+    )
+    a_type = tp.SimpleClassifier(
+        name="A",
+        structural=True,
+        field_signatures=[
+            tp.FieldInfo("x", tst.NumberType()),
+            tp.FieldInfo("y", tst.StringType())
+        ]
+    )
+
+    assert a_type.is_subtype(b_type)
+
+    array_constructor = tst.ArrayType()
+    array_a = array_constructor.new([a_type])
+    array_b = array_constructor.new([b_type])
+
+    # A[] should be a subtype of B[] (covariance)
+    assert array_a.is_subtype(array_b)
+
+    # B[] should NOT be a subtype of A[]
+    assert not array_b.is_subtype(array_a)
+
+
+def test_function_variance_structural():
+    """Tests function type variance with structural types."""
+    # Structural types for subtyping
+    # interface B { x: number }
+    # interface A extends B { y: string }
+    b_type = tp.SimpleClassifier(
+        name="B",
+        structural=True,
+        field_signatures=[tp.FieldInfo("x", tst.NumberType())]
+    )
+    a_type = tp.SimpleClassifier(
+        name="A",
+        structural=True,
+        field_signatures=[
+            tp.FieldInfo("x", tst.NumberType()),
+            tp.FieldInfo("y", tst.StringType())
+        ]
+    )
+
+    assert a_type.is_subtype(b_type)
+
+    # f1: (param: B) => A
+    # f2: (param: A) => B
+
+    # f1 should be a subtype of f2
+    # Parameter: B is a supertype of A (contravariance)
+    # Return: A is a subtype of B (covariance)
+
+    func_constructor = tst.FunctionType(1)
+    f1 = func_constructor.new([b_type, a_type])
+    f2 = func_constructor.new([a_type, b_type])
+
+    assert f1.is_subtype(f2)
+    assert not f2.is_subtype(f1)
+
+
+def test_function_variance_multiple_params_structural():
+    """Tests function type variance with multiple parameters and structural types."""
+    # B = { x: number }
+    # A = { x: number, y: string } -> A <: B
+    b_type = tp.SimpleClassifier("B", structural=True, field_signatures=[tp.FieldInfo("x", tst.NumberType())])
+    a_type = tp.SimpleClassifier("A", structural=True, field_signatures=[tp.FieldInfo("x", tst.NumberType()), tp.FieldInfo("y", tst.StringType())])
+    assert a_type.is_subtype(b_type)
+
+    # D = { z: boolean }
+    # C = { z: boolean, w: any } -> C <: D
+    d_type = tp.SimpleClassifier("D", structural=True, field_signatures=[tp.FieldInfo("z", tst.BooleanType())])
+    c_type = tp.SimpleClassifier("C", structural=True, field_signatures=[tp.FieldInfo("z", tst.BooleanType()), tp.FieldInfo("w", tst.ObjectType())])
+    assert c_type.is_subtype(d_type)
+
+    # f1: (p1: B, p2: D) => A
+    # f2: (p1: A, p2: C) => B
+    # f1 should be a subtype of f2
+    func_constructor = tst.FunctionType(2)
+    f1 = func_constructor.new([b_type, d_type, a_type])
+    f2 = func_constructor.new([a_type, c_type, b_type])
+
+    assert f1.is_subtype(f2)
+    assert not f2.is_subtype(f1)
+
+
+def test_array_variance_with_parameterized_structural_types():
+    """Tests array variance with parameterized structural types."""
+    # interface Box<T> { value: T }
+    t = tp.TypeParameter("T", variance=tp.Covariant)
+    box_constructor = tp.TypeConstructor(
+        "Box",
+        [t],
+        classifier=tp.SimpleClassifier(
+            "Box",
+            structural=True,
+            field_signatures=[tp.FieldInfo("value", t)]
+        )
+    )
+
+    # B = { x: number }
+    # A = { x: number, y: string } -> A <: B
+    b_type = tp.SimpleClassifier("B", structural=True, field_signatures=[tp.FieldInfo("x", tst.NumberType())])
+    a_type = tp.SimpleClassifier("A", structural=True, field_signatures=[tp.FieldInfo("x", tst.NumberType()), tp.FieldInfo("y", tst.StringType())])
+    assert a_type.is_subtype(b_type)
+
+    # Box<A> and Box<B>
+    box_a = box_constructor.new([a_type])
+    box_b = box_constructor.new([b_type])
+
+    # Box<A> should be a subtype of Box<B> because Box is covariant in T
+    assert box_a.is_subtype(box_b)
+    assert not box_b.is_subtype(box_a)
+
+    # Array of Box<A> and Array of Box<B>
+    array_constructor = tst.ArrayType()
+    array_box_a = array_constructor.new([box_a])
+    array_box_b = array_constructor.new([box_b])
+
+    # array_box_a should be a subtype of array_box_b
+    assert array_box_a.is_subtype(array_box_b)
+    assert not array_box_b.is_subtype(array_box_a)
+
+
+def test_array_variance_with_structurally_equivalent_generics():
+    """Tests array variance with structurally equivalent generic types having different type parameter names."""
+    # interface Foo<T> { item: T }
+    t = tp.TypeParameter("T")
+    foo_constructor = tp.TypeConstructor(
+        "Foo",
+        [t],
+        classifier=tp.SimpleClassifier(
+            "Foo",
+            structural=True,
+            field_signatures=[tp.FieldInfo("item", t)]
+        )
+    )
+
+    # interface Bar<U> { item: U }
+    u = tp.TypeParameter("U")
+    bar_constructor = tp.TypeConstructor(
+        "Bar",
+        [u],
+        classifier=tp.SimpleClassifier(
+            "Bar",
+            structural=True,
+            field_signatures=[tp.FieldInfo("item", u)]
+        )
+    )
+
+    foo_string = foo_constructor.new([tst.StringType()])
+    bar_string = bar_constructor.new([tst.StringType()])
+
+    # Foo<string> and Bar<string> should be structurally equivalent
+    assert foo_string.is_subtype(bar_string)
+    assert bar_string.is_subtype(foo_string)
+
+    # Arrays of these types
+    array_constructor = tst.ArrayType()
+    array_foo = array_constructor.new([foo_string])
+    array_bar = array_constructor.new([bar_string])
+
+    # array_foo and array_bar should be subtypes of each other
+    assert array_foo.is_subtype(array_bar)
+    assert array_bar.is_subtype(array_foo)
