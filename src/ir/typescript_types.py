@@ -104,11 +104,206 @@ class TypeScriptBuiltinFactory(bt.BuiltinFactory):
         return {
             ts_ast.TypeAliasDeclaration: add_type_alias,
         }
+    
+    def get_indexed_access_type(self, object_type, index_type):
+        """Create an indexed access type T[K]
+
+        Args:
+            object_type: The type being indexed
+            index_type: The index type (usually string literal or number)
+
+        Returns:
+            An IndexedAccessType instance
+        """
+        return IndexedAccessType(object_type, index_type)
+
+    def _can_generate_indexed_access(self, gen_object):
+        """Check if we can generate an indexed access type
+
+        We need at least one class/interface with fields to index
+        """
+        try:
+            classes = list(gen_object.context.get_classes(gen_object.namespace).values())
+            return any(hasattr(c, 'fields') and len(c.fields) > 0 for c in classes)
+        except:
+            return False
+
+    def _generate_indexed_access_type(self, gen_object):
+        """Generate an indexed access type T[K]
+
+        Returns:
+            An IndexedAccessType instance or None if generation fails
+        """
+        try:
+            # Get classes with fields
+            classes = list(gen_object.context.get_classes(gen_object.namespace).values())
+            indexable_classes = [c for c in classes
+                                if hasattr(c, 'fields') and len(c.fields) > 0]
+
+            if not indexable_classes:
+                return None
+
+            # Select a random class
+            target_class = ut.random.choice(indexable_classes)
+            object_type = target_class.get_type()
+
+            # If the class is generic (has type parameters), we need to instantiate it first
+            # because TypeScript requires: GenericClass<Type>["field"], not GenericClass["field"]
+            if object_type.is_type_constructor():
+                # Import here to avoid circular dependency
+                from src.ir import type_utils as tu
+                # Get available types for instantiation
+                available_types = gen_object.get_types(exclude_arrays=True, exclude_covariants=True)
+                # Instantiate the type constructor with random types
+                object_type, _ = tu.instantiate_type_constructor(
+                    object_type, available_types, gen_object.bt_factory
+                )
+
+            # Check if the class has methods (functions)
+            # If it has methods, keyof T will include function types, making T[keyof T] problematic
+            has_methods = (hasattr(target_class, 'functions') and
+                          len(target_class.functions) > 0)
+
+            # Decide whether to generate single key, union of keys, or keyof
+            # Only generate keyof if the class has no methods (to avoid function types in the union)
+            if has_methods:
+                choice = ut.random.integer(0, 2)  # 0: single key, 1: union key
+            else:
+                choice = ut.random.integer(0, 3)  # 0: single key, 1: union key, 2: keyof
+
+            # For keyof to work well, we need at least 1 field and NO methods
+            # For union key to work well, we need at least 2 fields
+            if choice == 2 and len(target_class.fields) >= 1 and not has_methods:
+                # Generate keyof: T[keyof T]
+                # Safe because this class has no methods, so keyof only returns field names
+                index_type = KeyofType(object_type)
+
+                # Resolve to union of all FIELD types (no methods since has_methods is False)
+                resolved_types = []
+                for field in target_class.fields:
+                    field_type = field.field_type
+                    if object_type.is_parameterized():
+                        type_var_map = object_type.get_type_variable_assignments()
+                        field_type = tp.substitute_type(field_type, type_var_map)
+                    resolved_types.append(field_type)
+
+                # Deduplicate types
+                seen = set()
+                unique_resolved = []
+                for t in resolved_types:
+                    t_key = (type(t), getattr(t, 'name', None), getattr(t, 'literal', None))
+                    if t_key not in seen:
+                        seen.add(t_key)
+                        unique_resolved.append(t)
+
+                # Create union if multiple types, otherwise use single type
+                if len(unique_resolved) > 1:
+                    resolved_type = UnionType(unique_resolved)
+                elif len(unique_resolved) == 1:
+                    resolved_type = unique_resolved[0]
+                else:
+                    # Fallback if no fields (shouldn't happen due to the check above)
+                    resolved_type = None
+            elif choice == 1 and len(target_class.fields) >= 2:
+                # Generate union of 2-3 field keys: T["field1" | "field2" | ...]
+                num_keys = min(ut.random.integer(2, 4), len(target_class.fields))
+                selected_fields = ut.random.sample(target_class.fields, num_keys)
+
+                # Create union of string literal types
+                index_types = [StringLiteralType(f.name) for f in selected_fields]
+                index_type = UnionType(index_types)
+
+                # Resolve to union of field types
+                resolved_types = []
+                for field in selected_fields:
+                    field_type = field.field_type
+                    if object_type.is_parameterized():
+                        type_var_map = object_type.get_type_variable_assignments()
+                        field_type = tp.substitute_type(field_type, type_var_map)
+                    resolved_types.append(field_type)
+
+                # Deduplicate types
+                seen = set()
+                unique_resolved = []
+                for t in resolved_types:
+                    t_key = (type(t), getattr(t, 'name', None), getattr(t, 'literal', None))
+                    if t_key not in seen:
+                        seen.add(t_key)
+                        unique_resolved.append(t)
+
+                # Create union if multiple types, otherwise use single type
+                if len(unique_resolved) > 1:
+                    resolved_type = UnionType(unique_resolved)
+                else:
+                    resolved_type = unique_resolved[0]
+            else:
+                # Generate single key: T["field"]
+                field = ut.random.choice(target_class.fields)
+                index_type = StringLiteralType(field.name)
+
+                # Cache the resolved type (the field's type) for accurate type checking
+                # If object_type is parameterized, we need to substitute type variables in field type
+                resolved_type = field.field_type
+                if object_type.is_parameterized():
+                    type_var_map = object_type.get_type_variable_assignments()
+                    resolved_type = tp.substitute_type(resolved_type, type_var_map)
+
+            return IndexedAccessType(object_type, index_type, resolved_type=resolved_type)
+        except:
+            return None
 
     def get_compound_types(self, gen_object):
-        return [
-            self._union_type_factory.get_union_type(gen_object),
-        ]
+        types = []
+
+        # Add union type
+        union_type = self._union_type_factory.get_union_type(gen_object)
+        if union_type:
+            types.append(union_type)
+
+        # Try to generate IndexedAccessType with 30% probability
+        if self._can_generate_indexed_access(gen_object):
+            indexed_type = self._generate_indexed_access_type(gen_object)
+            if indexed_type:
+                types.append(indexed_type)
+
+        types.append(self.get_keyof_type(gen_object))
+
+        # Filter out any None values that might have slipped through
+        return [t for t in types if t is not None]
+
+    def get_keyof_type(self, gen_object):
+        """Generate a `KeyofType` over a randomly selected, non-compound type.
+
+        Notes:
+        - We intentionally avoid native compound types to keep targets simple.
+        - If the selected target isn’t an object/class, `keyof` semantics
+          conservatively fall back to `string` at analysis time.
+        """
+        # Try multiple times to avoid type variables and unresolved targets
+        for _ in range(10):
+            target = gen_object.select_type(exclude_native_compound_types=True)
+            # Skip type variables or types that contain type variables, since
+            # we are not guaranteed to be in a scope where they are declared.
+            if getattr(target, "is_type_var", lambda: False)():
+                continue
+            if getattr(target, "has_type_variables", lambda: False)():
+                continue
+            # Avoid applying `keyof` to primitive builtins (e.g. bigint, number,
+            # string, boolean, symbol). Those are invalid or nonsensical in TS
+            # generation contexts, so skip them here.
+            prim_name = getattr(target, 'get_name', lambda: '')()
+            if (isinstance(target, (NumberType, BigIntegerType, StringType,
+                                   SymbolType, BooleanType)) or
+                    (isinstance(prim_name, str) and prim_name.lower() in
+                     {'number', 'bigint', 'string', 'symbol', 'boolean'})):
+                continue
+            # Avoid null/undefined/void as keyof operands; TS treats those specially (never)
+            # TODO: skip everything except typeclasses
+            if isinstance(target, (NullType, UndefinedType, VoidType)):
+                continue
+            return KeyofType(target)
+        # Fallback to a safe, known target
+        return KeyofType(StringType())
 
     def get_constant_candidates(self, constants):
         """ Updates the constant candidates of the generator
@@ -529,8 +724,8 @@ class UnionType(TypeScriptBuiltin):
             return {}
 
         # If T1 is a union type, then get all its types.
-        t1_types = (t1.types if t1.is_compound() and
-                     not t1.is_parameterized()
+        # Note: IndexedAccessType is also compound but doesn't have .types
+        t1_types = (t1.types if isinstance(t1, UnionType)
                      else [t1])
 
         if not t1.is_subtype(t2):
@@ -726,6 +921,396 @@ class UnionType(TypeScriptBuiltin):
     def __hash__(self):
         return hash(str(self.name) + str(self.types))
 
+class IndexedAccessType(TypeScriptBuiltin):
+    """Represents TypeScript's indexed access type T[K]
+
+    Examples:
+        Person["name"]  -> string
+        T[K]            -> depends on T and K
+        Array<T>[number] -> T
+    """
+    def __init__(self, object_type: tp.Type, index_type: tp.Type,
+                 name="IndexedAccessType", primitive=False, resolved_type=None):
+        super().__init__(name, primitive)
+        self.object_type = object_type  # The type being indexed
+        self.index_type = index_type    # The index type (usually string literal or number)
+        self._resolved_type = resolved_type  # Cache the resolved type if known
+
+    def is_compound(self):
+        return True
+
+    def has_type_variables(self):
+        return (self.object_type.has_type_variables() or
+                self.index_type.has_type_variables())
+
+    @two_way_subtyping
+    def is_subtype(self, other: tp.Type):
+        """
+        Subtype checking for indexed access types requires resolving the actual type.
+        For example: Person["name"] is a subtype of string
+        """
+        # Try to resolve the indexed access type
+        resolved = self._try_resolve()
+        if resolved:
+            return resolved.is_subtype(other)
+
+        # If unable to resolve, use conservative strategy
+        # Assume indexed access type may return Object
+        return isinstance(other, ObjectType)
+
+    def _try_resolve(self):
+        """Try to resolve T[K] to a concrete type
+
+        Attempts to statically resolve the indexed access type to its actual type.
+        For example:
+        - Person["name"] -> string (if Person has a name field of type string)
+        - Array<number>[number] -> number
+        - Person["age" | "name"] -> number | string (union of field types)
+
+        Returns:
+            The resolved type if successful, None otherwise
+        """
+        # If we cached the resolved type during generation, use it
+        if self._resolved_type is not None:
+            return self._resolved_type
+
+        # Case 1: Array<T>[number] -> T
+        # When indexing an array with a number, return the element type
+        if (self.object_type.is_parameterized() and
+            self.object_type.t_constructor.name == "Array"):
+            # Check if index_type is number or a number literal
+            if isinstance(self.index_type, (NumberType, NumberLiteralType)):
+                # Return the element type (first type argument of Array<T>)
+                return self.object_type.type_args[0]
+
+        # Case 2: T["K1" | "K2" | ...] -> T["K1"] | T["K2"] | ...
+        # When the index is a union of string literals, resolve each and create a union
+        if isinstance(self.index_type, UnionType):
+            resolved_types = []
+            for index_member in self.index_type.types:
+                # Create a new IndexedAccessType for each member of the union
+                member_indexed = IndexedAccessType(
+                    self.object_type,
+                    index_member,
+                    resolved_type=self._resolved_type
+                )
+                # Try to resolve this individual indexed access
+                resolved = member_indexed._try_resolve()
+                if resolved is not None:
+                    resolved_types.append(resolved)
+                else:
+                    # If we can't resolve one of the members, we can't resolve the whole union
+                    return None
+
+            # If we successfully resolved all members, return a union of the results
+            if resolved_types:
+                # Flatten if any resolved type is already a union
+                flattened = []
+                for t in resolved_types:
+                    if isinstance(t, UnionType):
+                        flattened.extend(t.types)
+                    else:
+                        flattened.append(t)
+
+                # Remove duplicates while preserving order
+                seen = set()
+                unique_types = []
+                for t in flattened:
+                    t_key = (type(t), getattr(t, 'name', None), getattr(t, 'literal', None))
+                    if t_key not in seen:
+                        seen.add(t_key)
+                        unique_types.append(t)
+
+                # If only one type remains after deduplication, return it directly
+                if len(unique_types) == 1:
+                    return unique_types[0]
+
+                return UnionType(unique_types)
+
+        # Case 3: T[keyof T] -> union of all field types
+        # When the index is keyof, convert it to union of string literals and use Case 2
+        if isinstance(self.index_type, KeyofType):
+            # Try to extract field names from the object type
+            try:
+                # Get the target type from keyof (usually should match object_type)
+                keyof_target = self.index_type.target
+
+                # Try to find the class/type with fields
+                # This works if object_type is a class type with accessible fields
+                target_for_fields = None
+                if hasattr(keyof_target, 'fields'):
+                    target_for_fields = keyof_target
+                elif hasattr(self.object_type, 'fields'):
+                    target_for_fields = self.object_type
+                # For parameterized types, try to get the constructor
+                elif hasattr(self.object_type, 't_constructor') and hasattr(self.object_type.t_constructor, 'fields'):
+                    target_for_fields = self.object_type.t_constructor
+
+                if target_for_fields and hasattr(target_for_fields, 'fields') and target_for_fields.fields:
+                    # Extract field names only (not methods) for fuzzing purposes
+                    # This ensures T[keyof T] resolves to a union of field types
+                    field_names = [f.name for f in target_for_fields.fields]
+                    string_literals = [StringLiteralType(name) for name in field_names]
+                else:
+                    string_literals = []
+
+                if string_literals:
+
+                    # Create union type of the keys
+                    if len(string_literals) == 1:
+                        keys_union = string_literals[0]
+                    else:
+                        keys_union = UnionType(string_literals)
+
+                    # Create a new IndexedAccessType with the union of keys
+                    # and recursively resolve using Case 2 logic
+                    indexed_with_union = IndexedAccessType(
+                        self.object_type,
+                        keys_union,
+                        resolved_type=self._resolved_type
+                    )
+                    return indexed_with_union._try_resolve()
+            except:
+                pass
+
+            # If we can't extract fields, return None and rely on cached resolved_type
+            return None
+
+        # Case 4: For class/interface types with string literal index
+        # We cannot fully resolve this without context (class definitions)
+        # This would require passing context into this method or caching
+        # field type information in the IndexedAccessType itself
+        # For now, we return None and rely on conservative subtyping
+
+        return None
+
+    def substitute_type(self, type_map, cond=lambda t: t.has_type_variables()):
+        """Substitute both object type and index type during type substitution"""
+        new_object = self.object_type.substitute_type(type_map, cond)
+        new_index = self.index_type.substitute_type(type_map, cond)
+        # Also substitute the resolved type if it exists
+        new_resolved = None
+        if self._resolved_type is not None:
+            new_resolved = self._resolved_type.substitute_type(type_map, cond)
+        return IndexedAccessType(new_object, new_index, resolved_type=new_resolved)
+
+    def get_type_variables(self, factory):
+        """Collect type variables from both object and index types"""
+        type_vars = defaultdict(set)
+
+        if self.object_type.is_type_var():
+            type_vars[self.object_type].add(
+                self.object_type.get_bound_rec(factory))
+        elif self.object_type.is_compound() or self.object_type.is_wildcard():
+            for k, v in self.object_type.get_type_variables(factory).items():
+                type_vars[k].update(v)
+
+        if self.index_type.is_type_var():
+            type_vars[self.index_type].add(
+                self.index_type.get_bound_rec(factory))
+        elif self.index_type.is_compound() or self.index_type.is_wildcard():
+            for k, v in self.index_type.get_type_variables(factory).items():
+                type_vars[k].update(v)
+
+        return type_vars
+
+    def to_type_variable_free(self, factory):
+        """Convert to a type without type variables"""
+        new_object = (self.object_type.to_type_variable_free(factory)
+                      if self.object_type.has_type_variables()
+                      else self.object_type)
+        new_index = (self.index_type.to_type_variable_free(factory)
+                     if self.index_type.has_type_variables()
+                     else self.index_type)
+        new_resolved = None
+        if self._resolved_type is not None:
+            new_resolved = (self._resolved_type.to_type_variable_free(factory)
+                           if self._resolved_type.has_type_variables()
+                           else self._resolved_type)
+        return IndexedAccessType(new_object, new_index, resolved_type=new_resolved)
+
+    def get_type_variable_assignments(self):
+        """
+        Get type variable assignments for IndexedAccessType.
+
+        IndexedAccessType is not itself a parameterized type, but if it resolves
+        to a parameterized type, we can delegate to that type.
+        Otherwise, return an empty dictionary.
+        """
+        resolved = self._try_resolve()
+        if resolved and hasattr(resolved, 'get_type_variable_assignments'):
+            return resolved.get_type_variable_assignments()
+        return {}
+
+    def unify_types(self, t1, factory, same_type=True):
+        """
+        Unify types for IndexedAccessType.
+
+        Since IndexedAccessType is a computed type (T[K] resolves to some type),
+        we use a conservative approach: return empty dict (no unification)
+        unless we can resolve the indexed access type.
+        """
+        # Try to resolve the indexed access to a concrete type
+        resolved = self._try_resolve()
+        if resolved:
+            # Delegate to the resolved type
+            from src.ir import type_utils as tu
+            return tu.unify_types(t1, resolved, factory, same_type)
+
+        # Cannot resolve, no unification possible
+        return {}
+
+    def get_name(self):
+        return f"{self.object_type.get_name()}[{self.index_type.get_name()}]"
+
+    def __str__(self):
+        return f"IndexedAccessType({self.object_type}[{self.index_type}])"
+
+    def __eq__(self, other):
+        return (self.__class__ == other.__class__ and
+                self.object_type == other.object_type and
+                self.index_type == other.index_type and
+                self._resolved_type == getattr(other, '_resolved_type', None))
+
+    def __hash__(self):
+        return hash(str(self.name) + str(self.object_type) + str(self.index_type))
+
+
+class KeyofType(TypeScriptBuiltin):
+    """
+    IR type representing the TypeScript `keyof T` operator.
+
+    Notes:
+    - This type is context-free by default. Resolution of concrete members
+      (i.e., the union of string literal keys) should be performed by a
+      resolver function when a Program/Context is available.
+    - To support membership checks like "name" <: keyof T without changing the
+      global is_subtype signature, this type consults an optional cached
+      `members` union set by the resolver and answers via two_way_subtyping.
+    """
+
+    def __init__(self, target, name="KeyofType", primitive=False):
+        super().__init__(name, primitive)
+        self.target = target
+        # Optional cache populated by a resolver: UnionType of StringLiteralType
+        self.members = None
+        # Note: Do not mark StringType as a supertype by default. In TS, `keyof T`
+        # can include number or symbol, so it is not generally a subtype of string.
+
+    def get_name(self):
+        # Keep pretty printing simple here; translators can special-case to
+        # reuse their own type formatting for the target when needed.
+        return f"keyof {self.target.get_name()}"
+
+    @two_way_subtyping
+    def is_subtype(self, other):
+        """Use resolved members' union to answer subtyping when available.
+
+        If `members` is populated (UnionType or StringLiteralType), delegate to
+        that type's existing subtyping rules. Otherwise, fall back to a
+        conservative rule aligned with TS: treat `keyof T` as potentially
+        `string | number | symbol` when unresolved.
+        """
+        # Prefer delegating to the union/literal expansion if present
+        if getattr(self, "members", None) is not None:
+            return self.members.is_subtype(other)
+
+        # Conservative default when not expanded:
+        # keyof T is NOT a subtype of plain string/number/symbol, but it IS
+        # a subtype of the union string | number | symbol. Reflect that here.
+        if isinstance(other, AliasType):
+            other = other.alias
+        if isinstance(other, UnionType):
+            base_candidates = [StringType(), NumberType(), SymbolType()]
+            return all(any(bc.is_subtype(ut) for ut in other.types)
+                       for bc in base_candidates)
+        return False
+
+    def two_way_subtyping(self, other):
+        # If a resolver has populated `members`, delegate membership checks
+        # to the existing UnionType infrastructure when possible.
+        if getattr(self, "members", None) is None:
+            return False
+        if isinstance(self.members, UnionType):
+            return self.members.two_way_subtyping(other)
+        # Single literal member case
+        return other.is_subtype(self.members)
+
+    def has_type_variables(self):
+        return getattr(self.target, "has_type_variables", lambda: False)()
+
+    def substitute_type(self, type_map, cond=lambda t: t.has_type_variables()):
+        # Substitute within the target and clear cached expansion as it's now
+        # potentially stale.
+        new_target = (
+            self.target.substitute_type(type_map, cond)
+            if getattr(self.target, "has_type_variables", lambda: False)()
+            else self.target
+        )
+        new_keyof = KeyofType(new_target, self.name, self.primitive)
+        return new_keyof
+
+    def __eq__(self, other):
+        return isinstance(other, KeyofType) and self.target == other.target
+
+    def __hash__(self):
+        return hash(("KeyofType", self.target))
+
+    # Ergonomic helper: context-aware resolution
+    def resolve(self, program):
+        """Resolve and cache the concrete key members using the given program.
+
+        Returns the resolved members type (UnionType, StringLiteralType, or StringType).
+        """
+        return expand_keyof(self, program)
+
+
+def expand_keyof(keyof_t, program):
+    """
+    Resolve `keyof T` into a concrete union of string literal keys when the
+    target refers to a known class/object with fields in the given program.
+
+    - Populates `keyof_t.members` with a UnionType[StringLiteralType(..)] or
+      a conservative StringType fallback when resolution is not possible.
+    - Returns the resolved members type (UnionType, StringLiteralType, or StringType).
+    """
+    # If already computed, return cached value
+    if getattr(keyof_t, "members", None) is not None:
+        return keyof_t.members
+
+    # Unwrap aliases in the target to get to the referred type.
+    target = getattr(keyof_t, "target", None)
+    if isinstance(target, AliasType):
+        target = target.alias
+
+    # Try to resolve to a class declaration by name (SimpleClassifier or ParameterizedType)
+    type_name = getattr(target, "name", None)
+    try:
+        # Access context and classes from the program
+        classes_dict = program.context.get_classes(ast.GLOBAL_NAMESPACE, only_current=True, glob=False)
+        class_decl = classes_dict.get(type_name)
+        if class_decl is None:
+            # Try global lookup across nested namespaces
+            classes_dict = program.context.get_classes(ast.GLOBAL_NAMESPACE, only_current=False, glob=True)
+            class_decl = classes_dict.get(type_name)
+    except Exception:
+        class_decl = None
+
+    # If we found a class declaration, collect all accessible fields (including inherited)
+    if class_decl is not None:
+        all_classes = program.context.get_classes(ast.GLOBAL_NAMESPACE, only_current=False, glob=True).values()
+        field_names = sorted({f.name for f in class_decl.get_all_fields(all_classes)})
+        if not field_names:
+            keyof_t.members = StringType()  # conservative fallback
+            return keyof_t.members
+        literals = [StringLiteralType(n) for n in field_names]
+        keyof_t.members = (UnionType(literals) if len(literals) > 1 else literals[0])
+        return keyof_t.members
+
+    # Fallback for non-object targets or when we cannot resolve: string
+    keyof_t.members = StringType()
+    return keyof_t.members
+
 
 class UnionTypeFactory(object):
     def __init__(self, max_ut, max_in_union):
@@ -848,8 +1433,10 @@ def gen_type_alias_decl(gen,
         as defined in src.ir.typescript_ast.py
 
     """
-    alias_type = (etype if etype else
-                  gen.select_type())
+    # For now, just use normal type selection
+    # TODO: Consider generating T[keyof T] in a way that doesn't cause type errors
+    alias_type = (etype if etype else gen.select_type())
+
     initial_depth = gen.depth
     gen.depth += 1
     gen.depth = initial_depth
