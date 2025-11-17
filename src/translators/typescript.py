@@ -121,7 +121,11 @@ class TypeScriptTranslator(BaseTranslator):
         if isinstance(t, tst.IndexedAccessType):
             object_name = self.get_type_name(t.object_type)
             index_name = self.get_type_name(t.index_type)
-            return f"{object_name}[{index_name}]"        
+            return f"{object_name}[{index_name}]"
+        if isinstance(t, tst.OmitType):
+            object_name = self.get_type_name(t.object_type)
+            keys_name = self.get_type_name(t.keys_to_omit)
+            return f"Omit<{object_name}, {keys_name}>"
         if not t_constructor:
             return t.get_name()
 

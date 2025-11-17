@@ -150,6 +150,114 @@ class TypeScriptBuiltinFactory(bt.BuiltinFactory):
         """
         return IndexedAccessType(object_type, index_type)
 
+    def get_omit_type(self, object_type, keys_to_omit):
+        """Create an Omit<T, K> type
+
+        Args:
+            object_type: The source type T
+            keys_to_omit: The keys to omit K (StringLiteralType or UnionType)
+
+        Returns:
+            An OmitType instance
+        """
+        return OmitType(object_type, keys_to_omit)
+
+    def _can_generate_omit(self, gen_object):
+        """Check if we can generate an Omit type
+
+        We need at least one class with 2+ fields
+        """
+        try:
+            classes = list(gen_object.context.get_classes(gen_object.namespace).values())
+            return any(hasattr(c, 'fields') and len(c.fields) >= 2 for c in classes)
+        except:
+            return False
+
+    def _generate_omit_type(self, gen_object):
+        """Generate an Omit<T, K> type
+
+        Strategy:
+        1. Select a class with multiple fields
+        2. Randomly select 1 to N-1 fields to omit
+        3. Calculate the union of remaining field types (for resolved_type cache)
+
+        Returns:
+            An OmitType instance or None if generation fails
+        """
+        try:
+            # Get classes with at least 2 fields
+            classes = list(gen_object.context.get_classes(gen_object.namespace).values())
+            omittable_classes = [c for c in classes
+                                if hasattr(c, 'fields') and len(c.fields) >= 2]
+
+            if not omittable_classes:
+                return None
+
+            # Select a random class
+            # Prefer non-generic classes to avoid infinite recursion in type generation
+            non_generic_classes = [c for c in omittable_classes
+                                  if not c.get_type().is_type_constructor()]
+
+            if non_generic_classes:
+                target_class = ut.random.choice(non_generic_classes)
+            else:
+                target_class = ut.random.choice(omittable_classes)
+
+            object_type = target_class.get_type()
+
+            # If the class is generic, instantiate it first
+            # Use exclude_native_compound_types to avoid infinite recursion
+            if object_type.is_type_constructor():
+                from src.ir import type_utils as tu
+                # IMPORTANT: exclude compound types to prevent infinite recursion
+                # (OmitType -> get_types -> get_compound_types -> OmitType -> ...)
+                available_types = gen_object.get_types(
+                    exclude_arrays=True,
+                    exclude_covariants=True,
+                    exclude_native_compound_types=True  # Prevent recursion
+                )
+                object_type, _ = tu.instantiate_type_constructor(
+                    object_type, available_types, gen_object.bt_factory
+                )
+
+            # Randomly select 1 to N-1 fields to omit (never omit all fields)
+            # IMPORTANT: We must leave at least 1 field to have a valid resolved_type
+            num_fields = len(target_class.fields)
+            # Omit between 1 and num_fields-1 fields (always keep at least 1)
+            max_to_omit = num_fields - 1 if num_fields > 1 else 0
+            if max_to_omit == 0:
+                # Edge case: only 1 field, skip this class
+                return None
+
+            num_to_omit = ut.random.integer(1, max_to_omit + 1)  # 1 to max_to_omit
+            fields_to_omit = ut.random.sample(target_class.fields, num_to_omit)
+
+            # Create keys_to_omit (string literal or union of string literals)
+            if len(fields_to_omit) == 1:
+                keys_to_omit = StringLiteralType(fields_to_omit[0].name)
+            else:
+                keys_to_omit = UnionType([StringLiteralType(f.name) for f in fields_to_omit])
+
+            # IMPORTANT: Do NOT set resolved_type to a union of field types!
+            # Omit<T, K> represents an object type (T with some fields removed),
+            # NOT a union of the remaining field types.
+            #
+            # For example:
+            #   Omit<{a: string, b: number}, "a"> = {b: number}  (object type)
+            #   NOT: number (field type)
+            #   NOT: string | number (union of field types)
+            #
+            # Since we cannot dynamically create anonymous structural types in the IR,
+            # we leave resolved_type as None. The OmitType will be treated conservatively
+            # in subtyping: it's only a subtype of Object.
+            #
+            # This prevents type errors like:
+            #   type K extends number = Omit<SomeClass, "field">  // Should fail if remaining fields aren't number
+
+            return OmitType(object_type, keys_to_omit, resolved_type=None)
+        except:
+            return None
+
     def _can_generate_indexed_access(self, gen_object):
         """Check if we can generate an indexed access type
 
@@ -293,11 +401,17 @@ class TypeScriptBuiltinFactory(bt.BuiltinFactory):
         if union_type:
             types.append(union_type)
 
-        # Try to generate IndexedAccessType with 30% probability
+        # Try to generate IndexedAccessType
         if self._can_generate_indexed_access(gen_object):
             indexed_type = self._generate_indexed_access_type(gen_object)
             if indexed_type:
                 types.append(indexed_type)
+
+        # Try to generate OmitType
+        if self._can_generate_omit(gen_object):
+            omit_type = self._generate_omit_type(gen_object)
+            if omit_type:
+                types.append(omit_type)
 
         types.append(self.get_keyof_type(gen_object))
 
@@ -1486,6 +1600,435 @@ class KeyofType(TypeScriptBuiltin):
         Returns the resolved members type (UnionType, StringLiteralType, or StringType).
         """
         return expand_keyof(self, program)
+
+
+class OmitType(TypeScriptBuiltin):
+    """Represents TypeScript's Omit<T, K> utility type
+
+    Omit<T, K> constructs a type by picking all properties from T
+    and removing keys K (or union of keys).
+
+    Examples:
+        Omit<Person, "age">          -> Person without age field
+        Omit<Person, "age" | "name"> -> Person without age and name
+        Omit<T, K>                   -> Generic form
+
+    Implementation:
+        In TypeScript: Omit<T, K> = Pick<T, Exclude<keyof T, K>>
+
+        We resolve this by:
+        1. Extracting all fields from T
+        2. Filtering out fields whose names are in K
+        3. Creating a union of remaining field types (or single type)
+    """
+
+    def __init__(self, object_type: tp.Type, keys_to_omit: tp.Type,
+                 name="OmitType", primitive=False, resolved_type=None):
+        super().__init__(name, primitive)
+        self.object_type = object_type      # Source type T
+        self.keys_to_omit = keys_to_omit    # Keys to omit K (StringLiteralType or UnionType)
+        self._resolved_type = resolved_type  # Cached resolved type
+
+    def is_compound(self):
+        return True
+
+    def has_type_variables(self):
+        return (self.object_type.has_type_variables() or
+                self.keys_to_omit.has_type_variables())
+
+    @two_way_subtyping
+    def is_subtype(self, other: tp.Type):
+        """Subtype checking for Omit types
+
+        We resolve the Omit type to its concrete form and delegate
+        to that type's subtype checking.
+        """
+        # Try to resolve the Omit type
+        resolved = self._try_resolve()
+        if resolved:
+            return resolved.is_subtype(other)
+
+        # Conservative fallback: only accept top-level Object type
+        # Omit types are object types, not subtypes of null, undefined, primitives, etc.
+        # IMPORTANT: Use strict check - only accept non-specific Object, not subclasses like NullType
+        if isinstance(other, ObjectType):
+            # Only accept the generic Object type, not specific subtypes
+            return other.__class__ == ObjectType
+        return False
+
+    def _try_resolve(self):
+        """Try to resolve Omit<T, K> to a concrete type
+
+        This method is called during subtyping checks and does not have access
+        to the program context. It can only use cached resolved_type.
+
+        For proper resolution with context, use the resolve(program) method.
+
+        Returns:
+            Cached resolved_type if available, otherwise None
+        """
+        # Return cached resolved type if available
+        if self._resolved_type is not None:
+            return self._resolved_type
+
+        # Without context, we cannot resolve properly
+        # Return None to trigger conservative subtyping behavior
+        return None
+
+    def resolve(self, program):
+        """Resolve Omit<T, K> using program context
+
+        This method computes the actual type by:
+        1. Finding the class definition for T
+        2. Getting all fields from T
+        3. Filtering out fields whose names are in K
+        4. Creating a union of the remaining field types
+
+        Args:
+            program: The Program node with context
+
+        Returns:
+            Resolved type (union of remaining field types) or None
+        """
+        return expand_omit(self, program)
+
+    def two_way_subtyping(self, other):
+        """Check if other type can be considered a subtype from Omit's perspective
+
+        This is called when checking: other.is_subtype(Omit<T, K>)
+        For example: "string".is_subtype(Omit<Windbreak, "clamming">)
+
+        Omit<T, K> represents an object type, so only object-like types can be subtypes.
+        Primitives like string, number, null, etc. cannot be subtypes of Omit.
+        """
+        # Try to resolve and delegate to the resolved type
+        resolved = self._try_resolve()
+        if resolved:
+            # Delegate to resolved type's two_way_subtyping if it exists
+            if hasattr(resolved, 'two_way_subtyping'):
+                return resolved.two_way_subtyping(other)
+            # Otherwise check if other is subtype of resolved
+            return other.is_subtype(resolved)
+
+        # Conservative: Omit types are object types, not assignable from primitives
+        # Only accept if other is also an object type (not primitives, null, undefined, etc.)
+        return False
+
+    def substitute_type(self, type_map, cond=lambda t: t.has_type_variables()):
+        """Substitute type variables in both object type and keys"""
+        new_object = self.object_type.substitute_type(type_map, cond)
+        new_keys = self.keys_to_omit.substitute_type(type_map, cond)
+        # Also substitute the resolved type if it exists
+        new_resolved = None
+        if self._resolved_type is not None:
+            new_resolved = self._resolved_type.substitute_type(type_map, cond)
+        return OmitType(new_object, new_keys, resolved_type=new_resolved)
+
+    def get_type_variables(self, factory):
+        """Collect type variables from both object and keys types"""
+        type_vars = defaultdict(set)
+
+        if self.object_type.is_type_var():
+            type_vars[self.object_type].add(
+                self.object_type.get_bound_rec(factory))
+        elif self.object_type.is_compound() or self.object_type.is_wildcard():
+            for k, v in self.object_type.get_type_variables(factory).items():
+                type_vars[k].update(v)
+
+        if self.keys_to_omit.is_type_var():
+            type_vars[self.keys_to_omit].add(
+                self.keys_to_omit.get_bound_rec(factory))
+        elif self.keys_to_omit.is_compound() or self.keys_to_omit.is_wildcard():
+            for k, v in self.keys_to_omit.get_type_variables(factory).items():
+                type_vars[k].update(v)
+
+        return type_vars
+
+    def to_type_variable_free(self, factory):
+        """Convert to a type without type variables"""
+        new_object = (self.object_type.to_type_variable_free(factory)
+                      if self.object_type.has_type_variables()
+                      else self.object_type)
+        new_keys = (self.keys_to_omit.to_type_variable_free(factory)
+                    if self.keys_to_omit.has_type_variables()
+                    else self.keys_to_omit)
+        new_resolved = None
+        if self._resolved_type is not None:
+            new_resolved = (self._resolved_type.to_type_variable_free(factory)
+                           if self._resolved_type.has_type_variables()
+                           else self._resolved_type)
+        return OmitType(new_object, new_keys, resolved_type=new_resolved)
+
+    def get_type_variable_assignments(self):
+        """Get type variable assignments for OmitType"""
+        resolved = self._try_resolve()
+        if resolved and hasattr(resolved, 'get_type_variable_assignments'):
+            return resolved.get_type_variable_assignments()
+        return {}
+
+    def unify_types(self, t1, factory, same_type=True):
+        """Unify types for OmitType"""
+        # Try to resolve the Omit type to a concrete type
+        resolved = self._try_resolve()
+        if resolved:
+            # Delegate to the resolved type
+            from src.ir import type_utils as tu
+            return tu.unify_types(t1, resolved, factory, same_type)
+
+        # Cannot resolve, no unification possible
+        return {}
+
+    def get_name(self):
+        return f"Omit<{self.object_type.get_name()}, {self.keys_to_omit.get_name()}>"
+
+    def __str__(self):
+        return f"OmitType({self.object_type}, {self.keys_to_omit})"
+
+    def __eq__(self, other):
+        return (self.__class__ == other.__class__ and
+                self.object_type == other.object_type and
+                self.keys_to_omit == other.keys_to_omit and
+                self._resolved_type == getattr(other, '_resolved_type', None))
+
+    def __hash__(self):
+        return hash(str(self.name) + str(self.object_type) + str(self.keys_to_omit))
+
+
+class StructuralOmitType(TypeScriptBuiltin):
+    """
+    Represents the resolved structural type of Omit<T, K>.
+
+    This type knows exactly which fields are available after omitting K from T.
+    Used for accurate type checking during fuzzing.
+
+    Example:
+        class Person { name: string; age: number; city: string }
+        Omit<Person, "age"> → StructuralOmitType with fields: {name: string, city: string}
+    """
+
+    def __init__(self, base_type, omitted_keys, available_fields,
+                 name="StructuralOmitType", primitive=False):
+        super().__init__(name, primitive)
+        self.base_type = base_type  # Original type T
+        self.omitted_keys = omitted_keys  # Set of omitted field names
+        self.available_fields = available_fields  # List of (name, type) tuples
+
+    def get_field_type(self, field_name):
+        """Get the type of a field by name"""
+        for name, field_type in self.available_fields:
+            if name == field_name:
+                return field_type
+        return None
+
+    def has_field(self, field_name):
+        """Check if a field exists in this structural type"""
+        return any(name == field_name for name, _ in self.available_fields)
+
+    def get_all_field_names(self):
+        """Get all available field names"""
+        return [name for name, _ in self.available_fields]
+
+    def is_compound(self):
+        return True
+
+    def has_type_variables(self):
+        # Check if any field type has type variables
+        return any(ft.has_type_variables() for _, ft in self.available_fields)
+
+    @two_way_subtyping
+    def is_subtype(self, other: tp.Type):
+        """
+        StructuralOmitType subtyping:
+        - StructuralOmitType <: base_type (always true, we removed fields)
+        - StructuralOmitType <: Object (object type)
+        - Two StructuralOmitTypes with same fields are equivalent
+        """
+        # Subtype of Object
+        if isinstance(other, ObjectType):
+            return True
+
+        # Subtype of base type (covariant)
+        if self.base_type == other:
+            return True
+
+        # Delegate to base type for other checks
+        return self.base_type.is_subtype(other)
+
+    def two_way_subtyping(self, other):
+        """
+        Check if other can be a subtype of this StructuralOmitType.
+
+        Only object types with compatible structure can be subtypes.
+        """
+        # Another StructuralOmitType with same base and omitted keys is equivalent
+        if isinstance(other, StructuralOmitType):
+            return (self.base_type == other.base_type and
+                    self.omitted_keys == other.omitted_keys)
+
+        # Base type is NOT a subtype (it has more fields)
+        # Primitives are NOT subtypes
+        return False
+
+    def substitute_type(self, type_map, cond=lambda t: t.has_type_variables()):
+        """Substitute type variables in field types"""
+        new_fields = []
+        for name, field_type in self.available_fields:
+            if field_type.has_type_variables():
+                new_type = field_type.substitute_type(type_map, cond)
+            else:
+                new_type = field_type
+            new_fields.append((name, new_type))
+
+        new_base = self.base_type.substitute_type(type_map, cond)
+        return StructuralOmitType(new_base, self.omitted_keys, new_fields)
+
+    def get_type_variables(self, factory):
+        """Collect type variables from all field types"""
+        type_vars = defaultdict(set)
+
+        for _, field_type in self.available_fields:
+            if field_type.is_type_var():
+                type_vars[field_type].add(field_type.get_bound_rec(factory))
+            elif field_type.is_compound() or field_type.is_wildcard():
+                for k, v in field_type.get_type_variables(factory).items():
+                    type_vars[k].update(v)
+
+        return type_vars
+
+    def to_type_variable_free(self, factory):
+        """Convert field types to be type variable free"""
+        new_fields = []
+        for name, field_type in self.available_fields:
+            if field_type.has_type_variables():
+                new_type = field_type.to_type_variable_free(factory)
+            else:
+                new_type = field_type
+            new_fields.append((name, new_type))
+
+        new_base = (self.base_type.to_type_variable_free(factory)
+                    if self.base_type.has_type_variables()
+                    else self.base_type)
+        return StructuralOmitType(new_base, self.omitted_keys, new_fields)
+
+    def get_name(self):
+        return f"Omit<{self.base_type.get_name()}, {', '.join(sorted(self.omitted_keys))}>"
+
+    def __str__(self):
+        fields_str = ', '.join(f"{n}: {t}" for n, t in self.available_fields)
+        return f"StructuralOmitType({{{fields_str}}})"
+
+    def __eq__(self, other):
+        return (self.__class__ == other.__class__ and
+                self.base_type == other.base_type and
+                self.omitted_keys == other.omitted_keys)
+
+    def __hash__(self):
+        return hash((str(self.base_type), tuple(sorted(self.omitted_keys))))
+
+
+def expand_omit(omit_t, program):
+    """
+    Resolve `Omit<T, K>` into a concrete structural type.
+
+    IMPORTANT: For fuzzing to work correctly, we must return an ACCURATE type
+    that represents the actual structure after omitting fields.
+
+    Strategy:
+    1. Find the class declaration for T
+    2. Get all fields from T
+    3. Filter out fields whose names are in K
+    4. Create a StructuralOmitType that wraps the remaining fields
+
+    This ensures:
+    - Generator knows exactly which fields are available
+    - Type checking is accurate (not approximated)
+    - Fuzzing generates valid code
+
+    Args:
+        omit_t: The OmitType instance to resolve
+        program: The Program node with context
+
+    Returns:
+        A StructuralOmitType representing T with K fields removed, or None
+    """
+    # If already resolved, return cached value
+    if omit_t._resolved_type is not None:
+        return omit_t._resolved_type
+
+    # Extract the object type T and keys K
+    object_type = omit_t.object_type
+    keys_to_omit = omit_t.keys_to_omit
+
+    # Unwrap aliases in the target
+    if isinstance(object_type, AliasType):
+        object_type = object_type.alias
+
+    # Get the type name to look up the class declaration
+    type_name = getattr(object_type, "name", None)
+    if type_name is None:
+        return None
+
+    # Try to find the class declaration in the program context
+    try:
+        classes_dict = program.context.get_classes(ast.GLOBAL_NAMESPACE, only_current=True, glob=False)
+        class_decl = classes_dict.get(type_name)
+        if class_decl is None:
+            # Try global lookup across nested namespaces
+            classes_dict = program.context.get_classes(ast.GLOBAL_NAMESPACE, only_current=False, glob=True)
+            class_decl = classes_dict.get(type_name)
+    except Exception:
+        class_decl = None
+
+    if class_decl is None or not hasattr(class_decl, 'fields'):
+        return None
+
+    # Extract the keys to omit from K
+    omitted_keys = set()
+    if isinstance(keys_to_omit, StringLiteralType):
+        # Single key: Omit<T, "key">
+        omitted_keys.add(keys_to_omit.literal)
+    elif isinstance(keys_to_omit, UnionType):
+        # Union of keys: Omit<T, "key1" | "key2">
+        for key_type in keys_to_omit.types:
+            if isinstance(key_type, StringLiteralType):
+                omitted_keys.add(key_type.literal)
+    else:
+        # Unknown key type, cannot resolve
+        return None
+
+    # Validate that the keys to omit actually exist in T
+    field_names = {f.name for f in class_decl.fields}
+    if not omitted_keys.issubset(field_names):
+        # Trying to omit non-existent fields, invalid
+        return None
+
+    # Get remaining fields after omitting
+    remaining_fields = [f for f in class_decl.fields if f.name not in omitted_keys]
+
+    if not remaining_fields:
+        # All fields omitted, invalid
+        return None
+
+    # Handle type variable substitution if object_type is parameterized
+    substituted_fields = []
+    for field in remaining_fields:
+        field_type = field.field_type
+        if object_type.is_parameterized():
+            type_var_map = object_type.get_type_variable_assignments()
+            field_type = tp.substitute_type(field_type, type_var_map)
+        substituted_fields.append((field.name, field_type))
+
+    # Create a StructuralOmitType that represents the omitted type
+    # This type knows which fields are available
+    resolved = StructuralOmitType(
+        base_type=object_type,
+        omitted_keys=omitted_keys,
+        available_fields=substituted_fields
+    )
+
+    # Cache the resolved type
+    omit_t._resolved_type = resolved
+    return resolved
 
 
 def expand_keyof(keyof_t, program):

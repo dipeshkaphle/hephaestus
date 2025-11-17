@@ -631,3 +631,147 @@ def test_array_variance_with_structurally_equivalent_generics():
     # array_foo and array_bar should be subtypes of each other
     assert array_foo.is_subtype(array_bar)
     assert array_bar.is_subtype(array_foo)
+
+
+def test_omit_basic():
+    """Test basic Omit<T, K> type functionality"""
+    # Create a simple object type simulation using resolved_type
+    # Omit<{name: string, age: number}, "age"> should resolve to string
+
+    # Single key omission
+    omit_single = tst.OmitType(
+        tst.ObjectType(),  # Placeholder for object type
+        tst.StringLiteralType("age"),
+        resolved_type=tst.StringType()  # After omitting "age", only "name: string" remains
+    )
+
+    # The resolved type should be string
+    assert omit_single._try_resolve() == tst.StringType()
+    assert omit_single.is_subtype(tst.ObjectType())
+    assert omit_single.is_subtype(tst.StringType())
+
+
+def test_omit_multiple_keys():
+    """Test Omit with union of keys"""
+    # Omit<{name: string, age: number, city: string}, "age" | "city">
+    # Should resolve to just string (from name field)
+
+    keys_to_omit = tst.UnionType([
+        tst.StringLiteralType("age"),
+        tst.StringLiteralType("city")
+    ])
+
+    omit_multiple = tst.OmitType(
+        tst.ObjectType(),
+        keys_to_omit,
+        resolved_type=tst.StringType()  # Only "name: string" remains
+    )
+
+    assert omit_multiple._try_resolve() == tst.StringType()
+    assert omit_multiple.is_subtype(tst.StringType())
+
+
+def test_omit_with_union_result():
+    """Test Omit that results in a union type"""
+    # Omit<{name: string, age: number, active: boolean}, "age">
+    # Should resolve to string | boolean (from name and active fields)
+
+    resolved_union = tst.UnionType([tst.StringType(), tst.BooleanType()])
+
+    omit_union = tst.OmitType(
+        tst.ObjectType(),
+        tst.StringLiteralType("age"),
+        resolved_type=resolved_union
+    )
+
+    assert omit_union._try_resolve() == resolved_union
+    assert omit_union.is_subtype(tst.ObjectType())
+
+
+def test_omit_subtyping():
+    """Test subtyping relationships for Omit types"""
+    # Omit<Person, "age"> with resolved_type string | number
+    resolved_type = tst.UnionType([tst.StringType(), tst.NumberType()])
+
+    omit_type = tst.OmitType(
+        tst.ObjectType(),
+        tst.StringLiteralType("age"),
+        resolved_type=resolved_type
+    )
+
+    # Should be subtype of Object
+    assert omit_type.is_subtype(tst.ObjectType())
+
+    # Should be subtype of the resolved union type
+    assert omit_type.is_subtype(resolved_type)
+
+    # Should NOT be subtype of a more specific type
+    assert not omit_type.is_subtype(tst.StringType())
+
+
+def test_omit_has_type_variables():
+    """Test type variable detection in Omit types"""
+    # Create a simple type variable (using a parameterized type as proxy)
+    simple_type = tst.StringType()
+
+    omit_no_vars = tst.OmitType(
+        simple_type,
+        tst.StringLiteralType("key"),
+        resolved_type=tst.NumberType()
+    )
+
+    # Simple types should not have type variables
+    assert not omit_no_vars.has_type_variables()
+
+
+def test_omit_equality():
+    """Test equality and hashing for Omit types"""
+    omit1 = tst.OmitType(
+        tst.ObjectType(),
+        tst.StringLiteralType("age"),
+        resolved_type=tst.StringType()
+    )
+
+    omit2 = tst.OmitType(
+        tst.ObjectType(),
+        tst.StringLiteralType("age"),
+        resolved_type=tst.StringType()
+    )
+
+    omit3 = tst.OmitType(
+        tst.ObjectType(),
+        tst.StringLiteralType("name"),  # Different key
+        resolved_type=tst.StringType()
+    )
+
+    # Same omit types should be equal
+    assert omit1 == omit2
+    assert hash(omit1) == hash(omit2)
+
+    # Different omit types should not be equal
+    assert omit1 != omit3
+
+
+def test_omit_get_name():
+    """Test string representation of Omit types"""
+    omit_single = tst.OmitType(
+        tst.NumberType(),
+        tst.StringLiteralType("key")
+    )
+
+    # Should render as Omit<T, K>
+    name = omit_single.get_name()
+    assert "Omit<" in name
+    assert "Number" in name
+    assert "key" in name
+
+    # Test with union keys
+    union_keys = tst.UnionType([
+        tst.StringLiteralType("a"),
+        tst.StringLiteralType("b")
+    ])
+    omit_union = tst.OmitType(tst.ObjectType(), union_keys)
+
+    name_union = omit_union.get_name()
+    assert "Omit<" in name_union
+    assert "Object" in name_union
