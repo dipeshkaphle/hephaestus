@@ -119,6 +119,40 @@ class TestEmptyStructuralVsObject:
         assert empty1.is_subtype(empty2), "Empty1 should be subtype of Empty2"
         assert empty2.is_subtype(empty1), "Empty2 should be subtype of Empty1"
 
+    def test_non_empty_structural_subtype_of_object(self):
+        """Non-empty structural types (classes with fields) should be subtypes of Object"""
+        person = tp.SimpleClassifier(
+            name="Person",
+            structural=True,
+            field_signatures=[
+                tp.FieldInfo("name", StringType()),
+                tp.FieldInfo("age", NumberType())
+            ],
+            method_signatures=[],
+            is_complete=True
+        )
+        obj = ObjectType()
+
+        # Person <: Object (all class instances are subtypes of Object)
+        assert person.is_subtype(obj), "Person should be subtype of Object"
+
+    def test_object_not_subtype_of_non_empty_structural(self):
+        """Object should NOT be subtype of non-empty structural types"""
+        person = tp.SimpleClassifier(
+            name="Person",
+            structural=True,
+            field_signatures=[
+                tp.FieldInfo("name", StringType()),
+                tp.FieldInfo("age", NumberType())
+            ],
+            method_signatures=[],
+            is_complete=True
+        )
+        obj = ObjectType()
+
+        # Object is NOT a subtype of Person (Object lacks required fields)
+        assert not obj.is_subtype(person), "Object should NOT be subtype of Person"
+
 
 class TestEmptyStructuralAsSupertype:
     """Test that empty structural types act as SUPERTYPES of object types"""

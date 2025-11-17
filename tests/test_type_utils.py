@@ -648,6 +648,39 @@ def test_find_irrelevant_type_with_given_classes():
     assert ir_type == qux.get_type()
 
 
+def test_find_irrelevant_type_excludes_object_for_classes():
+    """Object should be excluded as irrelevant type for class types in TypeScript"""
+    from src.ir.typescript_types import TypeScriptBuiltinFactory, ObjectType
+
+    ts_factory = TypeScriptBuiltinFactory()
+
+    # Create a class type
+    tomsk = tp.SimpleClassifier(
+        name="Tomsk",
+        structural=True,
+        field_signatures=[tp.FieldInfo("x", ts_factory.get_number_type())],
+        is_complete=True
+    )
+
+    obj = ObjectType()
+    number_type = ts_factory.get_number_type()
+    string_type = ts_factory.get_string_type()
+
+    types = [tomsk, obj, number_type, string_type]
+
+    # Find supertypes - Object should be included
+    supertypes = tutils.find_supertypes(tomsk, types, include_self=False)
+    assert obj in supertypes, "Object should be a supertype of class types"
+
+    # Find irrelevant type - Object should NOT be returned since it's a supertype
+    ir_type, debug_info = tutils.find_irrelevant_type(tomsk, types, ts_factory)
+
+    # The irrelevant type should be a primitive (number or string), not Object
+    assert ir_type is not None, "Should find an irrelevant type"
+    assert ir_type != obj, "Object should not be selected as irrelevant type for classes"
+    assert ir_type in [number_type, string_type], "Should select a primitive type as irrelevant"
+
+
 def test_type_hint_constants_and_binary_ops():
     context = ctx.Context()
     expr = ast.IntegerConstant(10, kt.Long)

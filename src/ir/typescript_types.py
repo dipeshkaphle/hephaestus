@@ -421,21 +421,14 @@ class ObjectType(TypeScriptBuiltin):
         """
         Handle reverse check: is other <: ObjectType?
 
-        In TypeScript, empty structural types are subtypes of Object.
+        In TypeScript, all class/interface types (structural types) are subtypes of Object.
 
         IMPORTANT: We cannot delegate to other.is_subtype(self) because that
         would cause infinite recursion. We must do a concrete check here.
         """
-        # Empty structural types are subtypes of Object
+        # All structural types (classes, interfaces) are subtypes of Object
         if tp.is_structural_type(other) and tp.is_complete(other):
-            other_fields = (other._get_all_fields() if hasattr(other, '_get_all_fields')
-                          else {})
-            other_methods = (other._get_all_methods() if hasattr(other, '_get_all_methods')
-                           else {})
-
-            # If other has no fields and no methods, it's a subtype of Object
-            if not other_fields and not other_methods:
-                return True
+            return True
 
         # Default: return False (conservative)
         # We don't delegate to other.is_subtype(self) to avoid infinite recursion

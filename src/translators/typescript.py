@@ -83,11 +83,18 @@ class TypeScriptTranslator(BaseTranslator):
     def get_union(self, utype):
         return " | ".join([self.get_type_name(t, True) for t in utype.types])
 
-    def type_arg2str(self, t_arg, from_union=False):
+    def type_arg2str(self, t_arg, from_union=False, in_contravariant_position=False):
         # TypeScript does not have a Wildcard type
         if not t_arg.is_wildcard():
             return self.get_type_name(t_arg, from_union)
-        return "unknown"
+
+        # For wildcards, use variance-aware translation:
+        # - Contravariant positions (function parameters): use 'any'
+        # - Covariant/invariant positions: use 'unknown'
+        # This is necessary because in strict mode, (p0: S) => S cannot satisfy
+        # (p0: unknown) => unknown due to contravariance of function parameters.
+        # Using 'any' in contravariant positions matches Java/Kotlin wildcard semantics.
+        return "any" if in_contravariant_position else "unknown"
 
     def get_type_name(self, t, from_union=False):
         t_constructor = getattr(t, 't_constructor', None)
@@ -122,9 +129,10 @@ class TypeScriptTranslator(BaseTranslator):
         if t_constructor.name.startswith(func_name):
             param_types = t.type_args[:-1]
             ret_type = t.type_args[-1]
+            # Function parameters are contravariant, return type is covariant
             res = "({}) => {}".format(
                 ",".join([
-                    "p" + str(i) + ": " + str(self.type_arg2str(pt))
+                    "p" + str(i) + ": " + str(self.type_arg2str(pt, in_contravariant_position=True))
                     for i, pt in enumerate(param_types)
                 ]),
                 self.type_arg2str(ret_type)

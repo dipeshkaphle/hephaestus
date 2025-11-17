@@ -417,6 +417,7 @@ def test_get_bound_rec_wildcards():
     assert wildcard.get_bound_rec() == type_param
 
 
+
 def test_structural_sibling_classes_not_subtypes():
     """
     Test that sibling structural classes are not subtypes of each other.
