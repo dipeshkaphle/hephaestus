@@ -269,6 +269,122 @@ class TypeScriptBuiltinFactory(bt.BuiltinFactory):
         except:
             return False
 
+    def _resolve_parent_class(self, super_class_info, gen_object):
+        """Resolve parent class declaration from super class information
+
+        Args:
+            super_class_info: The super class information (could be a type or declaration)
+            gen_object: The generator object with context
+
+        Returns:
+            The parent class declaration, or None if not found
+        """
+        try:
+            parent_class = None
+
+            # Case 1: super_class_info is a SuperClassInstantiation with a type
+            if hasattr(super_class_info, 'cls_type'):
+                cls_type = super_class_info.cls_type
+                # If it's a parameterized type, get the constructor
+                if hasattr(cls_type, 't_constructor'):
+                    parent_class = cls_type.t_constructor
+                elif hasattr(cls_type, 'name'):
+                    # Try to find the class by name in context
+                    parent_class = gen_object.context.get_class(
+                        gen_object.namespace, cls_type.name
+                    )
+            # Case 2: super_class_info is directly a type
+            elif hasattr(super_class_info, 't_constructor'):
+                parent_class = super_class_info.t_constructor
+            elif hasattr(super_class_info, 'name'):
+                parent_class = gen_object.context.get_class(
+                    gen_object.namespace, super_class_info.name
+                )
+
+            return parent_class
+        except:
+            return None
+
+    def _get_all_members(self, class_decl, gen_object, visited=None):
+        """Recursively get all members (fields and methods) including inherited ones
+
+        Args:
+            class_decl: The class declaration
+            gen_object: The generator object with context
+            visited: Set of visited class names to avoid infinite loops
+
+        Returns:
+            Tuple of (all_fields, all_methods) including inherited members
+        """
+        if visited is None:
+            visited = set()
+
+        # Avoid infinite loops in case of circular inheritance (shouldn't happen but be safe)
+        class_name = getattr(class_decl, 'name', None)
+        if class_name and class_name in visited:
+            return [], []
+
+        if class_name:
+            visited.add(class_name)
+
+        # Get current class members
+        all_fields = list(getattr(class_decl, 'fields', []))
+        all_methods = list(getattr(class_decl, 'functions', []))
+
+        # Recursively get parent class members
+        if hasattr(class_decl, 'super_class') and class_decl.super_class:
+            parent_class = self._resolve_parent_class(class_decl.super_class, gen_object)
+            if parent_class:
+                parent_fields, parent_methods = self._get_all_members(
+                    parent_class, gen_object, visited
+                )
+                all_fields.extend(parent_fields)
+                all_methods.extend(parent_methods)
+
+        return all_fields, all_methods
+
+    def _get_current_class_being_defined(self, gen_object):
+        """Get the class currently being defined (if any)
+
+        This is used to prevent generating T[keyof T] inside class T,
+        which would cause circular type references.
+
+        Args:
+            gen_object: The generator object with context and stack
+
+        Returns:
+            The class declaration currently being defined, or None
+        """
+        try:
+            # Check if generator has a namespace that tracks current scope
+            if not hasattr(gen_object, 'namespace') or not gen_object.namespace:
+                return None
+
+            # The namespace is a tuple like ('module_name', 'ClassName', 'methodName')
+            # We need to find which element is the current class
+            namespace = gen_object.namespace
+
+            # Traverse namespace backwards to find the most recent class
+            # We check each level of the namespace to see if it contains a class
+            for i in range(len(namespace), 0, -1):
+                # Get the potential class name (last element of this slice)
+                if i >= 1:
+                    potential_class_name = namespace[i-1]
+                    # Try to get classes at the parent namespace level
+                    parent_namespace = namespace[:i-1]
+
+                    # Get all classes at this level
+                    try:
+                        classes = gen_object.context.get_classes(parent_namespace)
+                        if potential_class_name in classes:
+                            return classes[potential_class_name]
+                    except:
+                        continue
+
+            return None
+        except:
+            return None
+
     def _generate_indexed_access_type(self, gen_object):
         """Generate an indexed access type T[K]
 
@@ -280,6 +396,17 @@ class TypeScriptBuiltinFactory(bt.BuiltinFactory):
             classes = list(gen_object.context.get_classes(gen_object.namespace).values())
             indexable_classes = [c for c in classes
                                 if hasattr(c, 'fields') and len(c.fields) > 0]
+
+            if not indexable_classes:
+                return None
+
+            # FIX: Get the current class being defined to prevent circular references
+            # e.g., prevent generating Svn[keyof Svn] inside class Svn
+            current_class = self._get_current_class_being_defined(gen_object)
+
+            # FIX: Filter out the current class to avoid T[keyof T] inside T
+            if current_class:
+                indexable_classes = [c for c in indexable_classes if c != current_class]
 
             if not indexable_classes:
                 return None
@@ -300,10 +427,13 @@ class TypeScriptBuiltinFactory(bt.BuiltinFactory):
                     object_type, available_types, gen_object.bt_factory
                 )
 
-            # Check if the class has methods (functions)
+            # FIX: Get ALL members (including inherited) to correctly determine if keyof is safe
+            # Previously only checked target_class.functions, missing inherited methods
+            all_fields, all_methods = self._get_all_members(target_class, gen_object)
+
+            # Check if the class has methods (functions) - INCLUDING INHERITED ONES
             # If it has methods, keyof T will include function types, making T[keyof T] problematic
-            has_methods = (hasattr(target_class, 'functions') and
-                          len(target_class.functions) > 0)
+            has_methods = len(all_methods) > 0
 
             # Decide whether to generate single key, union of keys, or keyof
             # Only generate keyof if the class has no methods (to avoid function types in the union)
@@ -314,14 +444,16 @@ class TypeScriptBuiltinFactory(bt.BuiltinFactory):
 
             # For keyof to work well, we need at least 1 field and NO methods
             # For union key to work well, we need at least 2 fields
-            if choice == 2 and len(target_class.fields) >= 1 and not has_methods:
+            # FIX: Use all_fields (including inherited) instead of target_class.fields
+            if choice == 2 and len(all_fields) >= 1 and not has_methods:
                 # Generate keyof: T[keyof T]
-                # Safe because this class has no methods, so keyof only returns field names
+                # Safe because this class has no methods (including inherited), so keyof only returns field names
                 index_type = KeyofType(object_type)
 
-                # Resolve to union of all FIELD types (no methods since has_methods is False)
+                # FIX: Resolve to union of ALL field types (including inherited)
+                # This matches TypeScript's actual behavior for keyof T
                 resolved_types = []
-                for field in target_class.fields:
+                for field in all_fields:
                     field_type = field.field_type
                     if object_type.is_parameterized():
                         type_var_map = object_type.get_type_variable_assignments()
@@ -345,10 +477,11 @@ class TypeScriptBuiltinFactory(bt.BuiltinFactory):
                 else:
                     # Fallback if no fields (shouldn't happen due to the check above)
                     resolved_type = None
-            elif choice == 1 and len(target_class.fields) >= 2:
+            elif choice == 1 and len(all_fields) >= 2:
                 # Generate union of 2-3 field keys: T["field1" | "field2" | ...]
-                num_keys = min(ut.random.integer(2, 4), len(target_class.fields))
-                selected_fields = ut.random.sample(target_class.fields, num_keys)
+                # FIX: Use all_fields instead of target_class.fields
+                num_keys = min(ut.random.integer(2, 4), len(all_fields))
+                selected_fields = ut.random.sample(all_fields, num_keys)
 
                 # Create union of string literal types
                 index_types = [StringLiteralType(f.name) for f in selected_fields]
@@ -379,7 +512,8 @@ class TypeScriptBuiltinFactory(bt.BuiltinFactory):
                     resolved_type = unique_resolved[0]
             else:
                 # Generate single key: T["field"]
-                field = ut.random.choice(target_class.fields)
+                # FIX: Use all_fields instead of target_class.fields
+                field = ut.random.choice(all_fields)
                 index_type = StringLiteralType(field.name)
 
                 # Cache the resolved type (the field's type) for accurate type checking
