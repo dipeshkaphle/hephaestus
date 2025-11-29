@@ -5,8 +5,14 @@
 
 In our experiments, we ran the following command:
 ```
-uv run python hephaestus.py --batch 30 -s 86400 -t 5 -w 8 --language typescript --disable-use-site-variance --error-filter-patterns regex.txt --trace --print-stacktrace
+uv run python hephaestus.py --batch 30 -s 86400 -t 5 -w 8 --language typescript --disable-use-site-variance --error-filter-patterns regex.txt --trace --print-stacktrace -k
 ```
-We would run the fuzzer for a day(86400 seconds), and would check the results the next day.
+We would run the fuzzer for a day(86400 seconds), and would check the results the next day. The `-k` flag allows us to save all the programs(even the ones that didn't trigger any issue). We used this to do differential testing of tsc in strict and non-strict mode.
+
+```bash
+find <generated-programs-dir> -type f -name "*.ts" -print0 | while IFS= read -r -d '' file; do
+      bash check_strict_compatibility.sh $file
+done
+```
 
 The `README.md` file has more hephaestus related information.
