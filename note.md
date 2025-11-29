@@ -18,6 +18,8 @@ function blink(aqueous: string): -56
 }
 ```
 
+Filed the issue (https://github.com/microsoft/TypeScript/issues/62814), the discussion from the developers seem to suggest that this is a valid behavior but we believe this isn't well documented.
+
 2. Undocumented Keyof Behaviour
 
 keyof (() => number) gives never
@@ -41,6 +43,7 @@ class Wezen {
 }
 ```
 
+Smaller programs to reproduce the bugs
 ```
 function fxxk(): number 
 {
@@ -64,3 +67,33 @@ type x = keyof (() => 10);
 
 type y = keyof (typeof z)
 ```
+
+Seems to be related/similar to https://github.com/microsoft/TypeScript/issues/16578 .
+Seems to be known already.
+
+3. Not assignable bug (duplicate of https://github.com/microsoft/TypeScript/issues/31570)
+Program : 1374
+Bug: 
+
+```
+TS2416Property 'tweed' in type 'Willing' is not assignable to the same property in base type 'Carotids<63, 63>'.\nTS2416Property 'tweed' in type 'Campaign' is not assignable to the same property in base type 'Carnage<number, \"toString\" | \"valueOf\" | \"toLocaleString\" | \"toFixed\" | \"toExponential\" | \"toPrecision\">'.\nTS2416Property 'tweed' in type 'Develop<L, U>' is not assignable to the same property in base type 'Carotids<63, U>'.\nTS2416Property 'tweed' in type 'Upland' is not assignable to the same property in base type 'Carnage<63, Object>'.\nTS2416Property 'tweed' in type 'Onega<R, L, U>' is not assignable to the same property in base type 'Carotids<number, boolean>'.
+```
+
+Program
+```ts
+interface Carotids<P, A> {
+  tweed<F_W extends number, F_R>(decimate: Carotids<number, number> | F_R | F_W | 63): Carotids<number, number> | F_R | F_W | 63
+}
+
+class Willing implements Carotids<integral, integral> {
+  constructor() {
+  }
+  tweed<F_W extends number, F_R>(decimate: Carotids<number, number> | F_R | F_W | 63): Carotids<number, number> | F_R | F_W | 63 
+{
+    return 63;
+    }
+
+}
+```
+
+
