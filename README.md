@@ -1,6 +1,8 @@
 Hephaestus
 ==========
 
+**FOR TYPESCRIPT, REFER TO TYPESCRIPT_README.md**
+
 Hephaestus is a testing framework for validating static typing procedures
 in compilers. This is done by a combination of
 program generation and transformation-based compiler testing.
